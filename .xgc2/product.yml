@@ -1,0 +1,30 @@
+schema: xgc2.product.v1
+id: xgc2-runtime-sync
+name: XGC2 Runtime Sync
+kind: ros1-apt
+summary: Runtime synchronization messages and coordinator for XGC2 ROS1 multi-agent systems.
+
+ros:
+  distro: noetic
+  packages:
+    - periodic_sync
+
+apt:
+  distribution: focal
+  install:
+    - ros-noetic-xgc2-runtime-sync
+  packages:
+    - ros-noetic-xgc2-runtime-sync
+
+usage:
+  install: |
+    sudo apt update
+    sudo apt install ros-noetic-xgc2-runtime-sync
+  smoke_test: |
+    rospack find periodic_sync
+
+ownership:
+  paths:
+    - /opt/ros/noetic/share/periodic_sync
+    - /opt/ros/noetic/include/periodic_sync
+    - /opt/ros/noetic/lib/periodic_sync/sync_coordinator
