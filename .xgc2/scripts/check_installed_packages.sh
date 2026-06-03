@@ -10,7 +10,12 @@ test -x "/opt/ros/${ROS_DISTRO}/lib/periodic_sync/sync_coordinator"
 test -x "/opt/ros/${ROS_DISTRO}/lib/periodic_sync/swarm_runtime_node"
 test -f "/opt/ros/${ROS_DISTRO}/include/periodic_sync/SyncTrigger.h"
 test -f "/opt/ros/${ROS_DISTRO}/include/periodic_sync/SyncedCycle.h"
+test -f "/opt/ros/${ROS_DISTRO}/include/periodic_sync/PeerLinkHealth.h"
+test -f "/opt/ros/${ROS_DISTRO}/include/periodic_sync/Recommendation.h"
 test -f "/opt/ros/${ROS_DISTRO}/include/swarm_sync_core/cycle_scheduler.hpp"
+test -f "/opt/ros/${ROS_DISTRO}/include/swarm_sync_core/weaknet/weaknet.hpp"
+test -f "/opt/ros/${ROS_DISTRO}/share/periodic_sync/specs/state_machine.yaml"
+test -f "/opt/ros/${ROS_DISTRO}/share/periodic_sync/config/weaknet_policy.yaml"
 
 while IFS= read -r file; do
   if ! file -b "${file}" | grep -q '^ELF'; then

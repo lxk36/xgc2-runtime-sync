@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>periodic_sync</name>
-  <version>1.5.0</version>
-  <description>ROS1 runtime synchronization coordinator, messages, and swarm sync core.</description>
+  <version>1.6.0</version>
+  <description>ROS1 runtime synchronization coordinator, weak-network telemetry, messages, and swarm sync core.</description>
 
   <maintainer email="lxk@todo.todo">lxk</maintainer>
   <license>TODO</license>

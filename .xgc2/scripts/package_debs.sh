@@ -85,7 +85,7 @@ Priority: optional
 Architecture: ${ARCH}
 Maintainer: XGC2 <apt@example.com>
 Depends: ros-noetic-message-runtime, ros-noetic-roscpp, ros-noetic-std-msgs
-Description: XGC2 runtime synchronization coordinator, messages, and swarm sync core for ROS1
+Description: XGC2 runtime synchronization coordinator, weak-network telemetry, messages, and swarm sync core for ROS1
 EOF
 printf 'xgc2-runtime-sync package\n' > "${pkg_root}/usr/share/doc/${PACKAGE}/README"
 chmod 0755 "${pkg_root}/DEBIAN"
