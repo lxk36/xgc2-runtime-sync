@@ -45,6 +45,14 @@ Envelope codec:
 - Unsupported envelope version is rejected.
 - Empty payload follows channel policy.
 
+Transport and task-semantic keys:
+
+- Sample keys are task-semantic and include session, task, channel, and schema fields.
+- Empty key fields and ROS graph-like names with slash separators are rejected.
+- In-memory transport dispatches only to subscribers on the exact same key.
+- Different task keys remain isolated.
+- Unsubscribe stops further delivery for the removed subscriber.
+
 Deadline checker:
 
 - Target cycle before cutoff is Fresh.

@@ -11,6 +11,8 @@
 #include "swarm_sync_core/sample_buffer.hpp"
 #include "swarm_sync_core/session.hpp"
 #include "swarm_sync_core/snapshot_builder.hpp"
+#include "swarm_sync_core/transport.hpp"
+#include "swarm_sync_core/transport_keys.hpp"
 
 namespace {
 
@@ -230,6 +232,114 @@ TEST(EnvelopeCodecTest, EncodesDecodesAndValidatesSchemaAndCrc) {
   const auto bad_crc = codec.decode(corrupted);
   EXPECT_FALSE(bad_crc.ok);
   EXPECT_EQ(SampleStatus::BadPayload, bad_crc.status);
+}
+
+TEST(TransportKeyTest, BuildsTaskSemanticKeyAndRejectsBadFields) {
+  const auto envelope = makeEnvelope(3);
+  const auto key = buildTaskSampleKey(envelope);
+  ASSERT_TRUE(key.ok) << key.error;
+  EXPECT_EQ("swarm_sync/v1/session/session-a/task/formation/channel/solution/schema/solution.v1",
+            key.key);
+  EXPECT_TRUE(validateTaskSampleKey(key.key));
+
+  TransportKeyFields missing_schema;
+  missing_schema.session_id = "session-a";
+  missing_schema.task_id = "formation";
+  missing_schema.channel = "solution";
+  EXPECT_FALSE(buildTaskSampleKey(missing_schema).ok);
+
+  TransportKeyFields ros_graph_like;
+  ros_graph_like.session_id = "session-a";
+  ros_graph_like.task_id = "/planner/local_solution";
+  ros_graph_like.channel = "solution";
+  ros_graph_like.schema_id = "solution.v1";
+  EXPECT_FALSE(buildTaskSampleKey(ros_graph_like).ok);
+
+  std::string reason;
+  EXPECT_FALSE(validateTaskSampleKey("/local_solution", &reason));
+  EXPECT_FALSE(reason.empty());
+  EXPECT_FALSE(validateTaskSampleKey(key.key + "/extra"));
+}
+
+TEST(InMemoryTransportTest, DispatchesOnlyToMatchingKey) {
+  const auto solution_key = buildTaskSampleKey(makeEnvelope(10));
+  ASSERT_TRUE(solution_key.ok) << solution_key.error;
+
+  auto status_envelope = makeEnvelope(10);
+  status_envelope.channel = "status";
+  status_envelope.schema_id = "status.v1";
+  const auto status_key = buildTaskSampleKey(status_envelope);
+  ASSERT_TRUE(status_key.ok) << status_key.error;
+
+  InMemoryTransport transport;
+  std::vector<TransportMessage> solution_messages;
+  std::vector<TransportMessage> status_messages;
+
+  const auto solution_subscription = transport.subscribe(
+      solution_key.key,
+      [&solution_messages](const TransportMessage& message) {
+        solution_messages.push_back(message);
+      });
+  ASSERT_TRUE(solution_subscription);
+
+  const auto status_subscription = transport.subscribe(
+      status_key.key,
+      [&status_messages](const TransportMessage& message) {
+        status_messages.push_back(message);
+      });
+  ASSERT_TRUE(status_subscription);
+
+  TransportMessage solution_message;
+  solution_message.key = solution_key.key;
+  solution_message.cycle_id = 10;
+  solution_message.participant_id = "uav2";
+  solution_message.payload = makeEnvelope(10);
+
+  ASSERT_TRUE(transport.publish(solution_message));
+  ASSERT_EQ(1u, solution_messages.size());
+  EXPECT_EQ(solution_key.key, solution_messages.front().key);
+  EXPECT_EQ(10u, solution_messages.front().cycle_id);
+  EXPECT_EQ("uav2", solution_messages.front().participant_id);
+  EXPECT_EQ(solution_message.payload.payload, solution_messages.front().payload.payload);
+  EXPECT_TRUE(status_messages.empty());
+
+  TransportMessage status_message;
+  status_message.key = status_key.key;
+  status_message.cycle_id = 10;
+  status_message.participant_id = "uav3";
+  status_message.payload = status_envelope;
+
+  ASSERT_TRUE(transport.publish(status_message));
+  ASSERT_EQ(1u, solution_messages.size());
+  ASSERT_EQ(1u, status_messages.size());
+  EXPECT_EQ(status_key.key, status_messages.front().key);
+}
+
+TEST(InMemoryTransportTest, UnsubscribeStopsDelivery) {
+  const auto key = buildTaskSampleKey(makeEnvelope(11));
+  ASSERT_TRUE(key.ok) << key.error;
+
+  InMemoryTransport transport;
+  uint32_t received_count = 0;
+  auto subscription = transport.subscribe(key.key, [&received_count](const TransportMessage&) {
+    ++received_count;
+  });
+  ASSERT_TRUE(subscription);
+  EXPECT_TRUE(subscription->active());
+
+  TransportMessage message;
+  message.key = key.key;
+  message.cycle_id = 11;
+  message.participant_id = "uav2";
+  message.payload = makeEnvelope(11);
+
+  EXPECT_TRUE(transport.publish(message));
+  EXPECT_EQ(1u, received_count);
+
+  transport.unsubscribe(subscription);
+  EXPECT_FALSE(subscription->active());
+  EXPECT_TRUE(transport.publish(message));
+  EXPECT_EQ(1u, received_count);
 }
 
 TEST(DeadlineCheckerTest, ClassifiesFreshLateWrongCycleAndBadSchema) {

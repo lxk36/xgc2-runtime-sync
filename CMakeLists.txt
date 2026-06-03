@@ -52,6 +52,8 @@ add_library(swarm_sync_core
   src/core/sample_buffer.cpp
   src/core/session.cpp
   src/core/snapshot_builder.cpp
+  src/core/transport.cpp
+  src/core/transport_keys.cpp
 )
 target_compile_features(swarm_sync_core PUBLIC cxx_std_17)
 
