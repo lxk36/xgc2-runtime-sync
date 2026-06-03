@@ -115,7 +115,11 @@ add_dependencies(swarm_ground_station_node
   ${catkin_EXPORTED_TARGETS}
 )
 target_link_libraries(swarm_ground_station_node
+  swarm_sync_core
   ${catkin_LIBRARIES}
+)
+set_target_properties(swarm_ground_station_node PROPERTIES
+  INSTALL_RPATH "$ORIGIN/.."
 )
 
 install(TARGETS swarm_sync_core swarm_sync_ros1_adapter sync_coordinator swarm_runtime_node swarm_ground_station_node
