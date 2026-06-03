@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -90,8 +91,8 @@ TEST(CycleSchedulerTest, TickIsControlledAndDoesNotBackfillMissedCycles) {
   CycleSchedulerConfig config;
   config.session_id = "session-a";
   config.task_id = "formation";
-  config.epoch_ns = 1000;
-  config.period_ns = 100;
+  config.epoch_ns = 1000000000;
+  config.period_ns = 50000000;
   ASSERT_TRUE(scheduler.configure(config));
 
   std::vector<uint64_t> callback_cycles;
@@ -100,21 +101,107 @@ TEST(CycleSchedulerTest, TickIsControlledAndDoesNotBackfillMissedCycles) {
   });
   scheduler.start();
 
-  EXPECT_FALSE(scheduler.tick(999).has_value());
-  auto first = scheduler.tick(1000);
+  EXPECT_FALSE(scheduler.tick(999999999).has_value());
+  auto first = scheduler.tick(1000000000);
   ASSERT_TRUE(first.has_value());
   EXPECT_EQ(0u, first->cycle_id);
   EXPECT_EQ(0, first->jitter_ns);
 
-  EXPECT_FALSE(scheduler.tick(1049).has_value());
-  auto skipped_to_three = scheduler.tick(1305);
+  EXPECT_FALSE(scheduler.tick(1000001000).has_value());
+  auto skipped_to_three = scheduler.tick(1150005000);
   ASSERT_TRUE(skipped_to_three.has_value());
   EXPECT_EQ(3u, skipped_to_three->cycle_id);
-  EXPECT_EQ(5, skipped_to_three->jitter_ns);
+  EXPECT_EQ(1000000000 + 3 * 50000000, skipped_to_three->expected_time_ns);
+  EXPECT_EQ(1150005000, skipped_to_three->actual_time_ns);
+  EXPECT_EQ(5000, skipped_to_three->jitter_ns);
   EXPECT_EQ((std::vector<uint64_t>{0, 3}), callback_cycles);
 
   scheduler.stop();
-  EXPECT_FALSE(scheduler.tick(1400).has_value());
+  EXPECT_FALSE(scheduler.tick(1200000000).has_value());
+}
+
+TEST(CycleSchedulerTest, ValidatesFrequencyAndPeriodBounds) {
+  EXPECT_TRUE(CycleScheduler::isValidFrequencyHz(0.5));
+  EXPECT_TRUE(CycleScheduler::isValidFrequencyHz(20.0));
+  EXPECT_TRUE(CycleScheduler::isValidFrequencyHz(50.0));
+  EXPECT_FALSE(CycleScheduler::isValidFrequencyHz(0.49));
+  EXPECT_FALSE(CycleScheduler::isValidFrequencyHz(50.1));
+  EXPECT_FALSE(CycleScheduler::isValidFrequencyHz(0.0));
+  EXPECT_FALSE(CycleScheduler::isValidFrequencyHz(std::numeric_limits<double>::infinity()));
+  EXPECT_FALSE(CycleScheduler::isValidFrequencyHz(std::numeric_limits<double>::quiet_NaN()));
+
+  ASSERT_TRUE(CycleScheduler::periodNsFromFrequencyHz(0.5).has_value());
+  EXPECT_EQ(CycleScheduler::kMaxPeriodNs, *CycleScheduler::periodNsFromFrequencyHz(0.5));
+  ASSERT_TRUE(CycleScheduler::periodNsFromFrequencyHz(50.0).has_value());
+  EXPECT_EQ(CycleScheduler::kMinPeriodNs, *CycleScheduler::periodNsFromFrequencyHz(50.0));
+  EXPECT_FALSE(CycleScheduler::periodNsFromFrequencyHz(0.49).has_value());
+  EXPECT_FALSE(CycleScheduler::periodNsFromFrequencyHz(50.1).has_value());
+
+  EXPECT_TRUE(CycleScheduler::isValidPeriodNs(CycleScheduler::kMinPeriodNs));
+  EXPECT_TRUE(CycleScheduler::isValidPeriodNs(CycleScheduler::kMaxPeriodNs));
+  EXPECT_FALSE(CycleScheduler::isValidPeriodNs(CycleScheduler::kMinPeriodNs - 1));
+  EXPECT_FALSE(CycleScheduler::isValidPeriodNs(CycleScheduler::kMaxPeriodNs + 1));
+  EXPECT_FALSE(CycleScheduler::isValidPeriodNs(0));
+  EXPECT_FALSE(CycleScheduler::isValidPeriodNs(-1));
+
+  CycleSchedulerConfig config;
+  config.session_id = "session-a";
+  config.task_id = "formation";
+  config.epoch_ns = 1000000000;
+  config.period_ns = CycleScheduler::kMinPeriodNs - 1;
+  CycleScheduler scheduler;
+  EXPECT_FALSE(scheduler.configure(config));
+
+  config.period_ns = CycleScheduler::kMaxPeriodNs + 1;
+  EXPECT_FALSE(scheduler.configure(config));
+
+  config.period_ns = 50000000;
+  EXPECT_TRUE(scheduler.configure(config));
+}
+
+TEST(CycleSchedulerTest, EmitsExpectedActualAndJitterForTwentyHzHundredCycles) {
+  constexpr int64_t kEpochNs = 1000000000;
+  constexpr int64_t kPeriodNs = 50000000;
+  CycleScheduler scheduler;
+  CycleSchedulerConfig config;
+  config.session_id = "session-a";
+  config.task_id = "formation";
+  config.epoch_ns = kEpochNs;
+  config.period_ns = kPeriodNs;
+  ASSERT_TRUE(scheduler.configure(config));
+  scheduler.start();
+
+  for (uint64_t cycle = 0; cycle < 100; ++cycle) {
+    const int64_t expected_time_ns = kEpochNs + static_cast<int64_t>(cycle) * kPeriodNs;
+    const int64_t injected_jitter_ns = static_cast<int64_t>(cycle % 7) * 1000;
+    const int64_t actual_time_ns = expected_time_ns + injected_jitter_ns;
+    const auto event = scheduler.tick(actual_time_ns);
+    ASSERT_TRUE(event.has_value()) << "cycle " << cycle;
+    EXPECT_EQ(cycle, event->cycle_id);
+    EXPECT_EQ(expected_time_ns, event->expected_time_ns);
+    EXPECT_EQ(actual_time_ns, event->actual_time_ns);
+    EXPECT_EQ(injected_jitter_ns, event->jitter_ns);
+    EXPECT_EQ(kPeriodNs, event->period_ns);
+  }
+  EXPECT_FALSE(scheduler.tick(kEpochNs + 99 * kPeriodNs + 10000).has_value());
+}
+
+TEST(CycleSchedulerTest, StopPreventsNewCycles) {
+  CycleScheduler scheduler;
+  CycleSchedulerConfig config;
+  config.session_id = "session-a";
+  config.task_id = "formation";
+  config.epoch_ns = 1000000000;
+  config.period_ns = 50000000;
+  ASSERT_TRUE(scheduler.configure(config));
+  scheduler.start();
+
+  ASSERT_TRUE(scheduler.tick(1000000000).has_value());
+  scheduler.stop();
+
+  EXPECT_FALSE(scheduler.running());
+  EXPECT_FALSE(scheduler.tick(1050000000).has_value());
+  EXPECT_FALSE(scheduler.tick(1100000000).has_value());
 }
 
 TEST(EnvelopeCodecTest, EncodesDecodesAndValidatesSchemaAndCrc) {

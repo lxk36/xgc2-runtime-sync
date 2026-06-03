@@ -31,6 +31,15 @@ class CycleScheduler {
 public:
   using Callback = std::function<void(const CycleEvent&)>;
 
+  static constexpr double kMinFrequencyHz = 0.5;
+  static constexpr double kMaxFrequencyHz = 50.0;
+  static constexpr int64_t kMinPeriodNs = 20000000;
+  static constexpr int64_t kMaxPeriodNs = 2000000000;
+
+  static bool isValidFrequencyHz(double frequency_hz);
+  static bool isValidPeriodNs(int64_t period_ns);
+  static std::optional<int64_t> periodNsFromFrequencyHz(double frequency_hz);
+
   bool configure(const CycleSchedulerConfig& config);
   bool configure(std::string session_id,
                  std::string task_id,

@@ -1,12 +1,30 @@
 #include "swarm_sync_core/cycle_scheduler.hpp"
 
+#include <cmath>
 #include <limits>
 #include <utility>
 
 namespace swarm_sync {
 
+bool CycleScheduler::isValidFrequencyHz(double frequency_hz) {
+  return std::isfinite(frequency_hz) &&
+         frequency_hz >= kMinFrequencyHz &&
+         frequency_hz <= kMaxFrequencyHz;
+}
+
+bool CycleScheduler::isValidPeriodNs(int64_t period_ns) {
+  return period_ns >= kMinPeriodNs && period_ns <= kMaxPeriodNs;
+}
+
+std::optional<int64_t> CycleScheduler::periodNsFromFrequencyHz(double frequency_hz) {
+  if (!isValidFrequencyHz(frequency_hz)) {
+    return std::nullopt;
+  }
+  return static_cast<int64_t>(std::llround(1.0e9 / frequency_hz));
+}
+
 bool CycleScheduler::configure(const CycleSchedulerConfig& config) {
-  if (config.period_ns <= 0) {
+  if (!isValidPeriodNs(config.period_ns)) {
     return false;
   }
   if (config.session_id.empty() || config.task_id.empty()) {

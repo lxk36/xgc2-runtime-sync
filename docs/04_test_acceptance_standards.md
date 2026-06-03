@@ -30,6 +30,7 @@ Recommended:
 
 Cycle scheduler:
 
+- Frequency/period validation accepts 0.5 Hz through 50 Hz and rejects values outside that range.
 - Future epoch does not trigger early.
 - cycle_id starts at 0 when epoch is reached.
 - 20 Hz for 100 cycles increments continuously.

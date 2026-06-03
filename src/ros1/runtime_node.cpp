@@ -65,7 +65,15 @@ class SwarmRuntimeNode {
     pnh.param<double>("poll_rate_hz", poll_rate_hz_, 200.0);
 
     config_.required_participants = {config_.self_id};
-    config_.period_ns = static_cast<int64_t>(1.0e9 / std::max(0.001, frequency_hz_));
+    const auto period_ns = swarm_sync::CycleScheduler::periodNsFromFrequencyHz(frequency_hz_);
+    if (!period_ns) {
+      ROS_ERROR_STREAM("frequency_hz must be in ["
+                       << swarm_sync::CycleScheduler::kMinFrequencyHz << ", "
+                       << swarm_sync::CycleScheduler::kMaxFrequencyHz << "], got "
+                       << frequency_hz_);
+      return false;
+    }
+    config_.period_ns = *period_ns;
     config_.epoch_ns = toNs(ros::Time::now()) + static_cast<int64_t>(start_delay_s_ * 1.0e9);
 
     if (!session_.configure(config_)) {
@@ -101,6 +109,12 @@ class SwarmRuntimeNode {
 
  private:
   bool startSession(int64_t epoch_ns, int64_t period_ns, const swarm_sync::ClockState& clock) {
+    if (!swarm_sync::CycleScheduler::isValidPeriodNs(period_ns)) {
+      session_.markError("period_ns outside supported 0.5-50 Hz range");
+      return false;
+    }
+    config_.epoch_ns = epoch_ns;
+    config_.period_ns = period_ns;
     if (!session_.configure(config_)) {
       return false;
     }
@@ -125,16 +139,25 @@ class SwarmRuntimeNode {
 
   bool startCallback(periodic_sync::StartSession::Request& request,
                      periodic_sync::StartSession::Response& response) {
+    auto next_config = config_;
     if (!request.session_id.empty()) {
-      config_.session_id = request.session_id;
+      next_config.session_id = request.session_id;
     }
     if (!request.task_id.empty()) {
-      config_.task_id = request.task_id;
+      next_config.task_id = request.task_id;
     }
+    int64_t requested_period_ns = next_config.period_ns;
     if (request.period.toSec() > 0.0) {
-      config_.period_ns = toNs(request.period);
+      requested_period_ns = toNs(request.period);
     }
-    config_.epoch_ns = toNs(request.epoch_time);
+    if (!swarm_sync::CycleScheduler::isValidPeriodNs(requested_period_ns)) {
+      response.accepted = false;
+      response.reason = "period_ns outside supported 0.5-50 Hz range";
+      return true;
+    }
+    next_config.period_ns = requested_period_ns;
+    next_config.epoch_ns = toNs(request.epoch_time);
+    config_ = next_config;
 
     swarm_sync::ClockState clock;
     clock.clock_ok = true;

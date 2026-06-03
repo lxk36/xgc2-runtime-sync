@@ -1,7 +1,7 @@
 schema: xgc2.product.v1
 id: xgc2-runtime-sync
 name: XGC2 Runtime Sync
-version: 1.1.0-1
+version: 1.1.1-1
 kind: ros1-apt
 summary: Runtime synchronization coordinator, messages, and swarm sync core for XGC2 ROS1 multi-agent systems.
 
