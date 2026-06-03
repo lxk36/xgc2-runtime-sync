@@ -90,6 +90,9 @@ target_link_libraries(swarm_runtime_node
   swarm_sync_core
   ${catkin_LIBRARIES}
 )
+set_target_properties(swarm_runtime_node PROPERTIES
+  INSTALL_RPATH "$ORIGIN/.."
+)
 
 add_executable(swarm_ground_station_node
   src/ros1/ground_station_node.cpp
