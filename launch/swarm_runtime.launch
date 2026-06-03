@@ -2,6 +2,11 @@
   <arg name="session_config" default="$(find periodic_sync)/config/session.yaml"/>
   <arg name="channels_config" default="$(find periodic_sync)/config/channels.yaml"/>
   <arg name="ros1_adapters_config" default="$(find periodic_sync)/config/ros1_adapters.yaml"/>
+  <arg name="weaknet_policy" default="$(find periodic_sync)/config/weaknet_policy.yaml"/>
+  <arg name="weaknet_enabled" default="true"/>
+  <arg name="weaknet_budget_max_realtime_bps" default="2000000.0"/>
+  <arg name="weaknet_budget_safety_factor" default="1.35"/>
+  <arg name="weaknet_payload_bytes_p95" default="600"/>
 
   <node pkg="periodic_sync"
         type="swarm_runtime_node"
@@ -10,6 +15,11 @@
     <param name="session_config" value="$(arg session_config)"/>
     <param name="channels_config" value="$(arg channels_config)"/>
     <param name="ros1_adapters_config" value="$(arg ros1_adapters_config)"/>
+    <param name="weaknet_policy" value="$(arg weaknet_policy)"/>
+    <param name="weaknet_enabled" value="$(arg weaknet_enabled)"/>
+    <param name="weaknet_budget_max_realtime_bps" value="$(arg weaknet_budget_max_realtime_bps)"/>
+    <param name="weaknet_budget_safety_factor" value="$(arg weaknet_budget_safety_factor)"/>
+    <param name="weaknet_payload_bytes_p95" value="$(arg weaknet_payload_bytes_p95)"/>
     <rosparam command="load" file="$(arg ros1_adapters_config)"/>
   </node>
 </launch>

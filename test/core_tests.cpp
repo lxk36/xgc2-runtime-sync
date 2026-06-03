@@ -14,6 +14,7 @@
 #include "swarm_sync_core/snapshot_builder.hpp"
 #include "swarm_sync_core/transport.hpp"
 #include "swarm_sync_core/transport_keys.hpp"
+#include "swarm_sync_core/weaknet/weaknet.hpp"
 #include "swarm_sync_ros1/adapter_config.hpp"
 
 namespace {
@@ -666,6 +667,125 @@ TEST(SnapshotBuilderTest, BuildsFreshMissingAndBadStats) {
   EXPECT_EQ(1u, snapshot.stats.bad_count);
   EXPECT_FALSE(snapshot.all_required_fresh);
   EXPECT_FALSE(snapshot.all_required_usable);
+}
+
+TEST(WeaknetChannelProfileTest, EnforcesRealtimeNoAckAndDropQueue) {
+  auto profile = swarm_sync::weaknet::defaultProfileFor(
+      swarm_sync::weaknet::ChannelKind::RealtimeSample);
+  std::string error;
+  EXPECT_TRUE(swarm_sync::weaknet::validateChannelProfile(profile, &error)) << error;
+  EXPECT_FALSE(profile.allow_ack);
+  EXPECT_EQ(swarm_sync::weaknet::CongestionControl::Drop, profile.qos.congestion);
+  EXPECT_LE(profile.max_queue_cycles, 1u);
+
+  profile.allow_ack = true;
+  EXPECT_FALSE(swarm_sync::weaknet::validateChannelProfile(profile, &error));
+  EXPECT_NE(std::string::npos, error.find("ACK"));
+}
+
+TEST(WeaknetCycleWindowTest, NeverAcceptsLateOrWrongCycleAsFresh) {
+  swarm_sync::weaknet::CycleWindow window({
+      50000000,
+      40000000,
+      50000000,
+      100000000,
+  });
+  std::string error;
+  ASSERT_TRUE(window.valid(&error)) << error;
+
+  swarm_sync::weaknet::SampleTiming fresh;
+  fresh.target_cycle = 10;
+  fresh.local_receive_ns = 1000000000 + 20000000;
+  auto decision = window.classify(10, 1000000000, fresh);
+  EXPECT_EQ(SampleStatus::Fresh, decision.status);
+  EXPECT_TRUE(decision.usable_for_cycle);
+
+  auto late = fresh;
+  late.local_receive_ns = 1000000000 + 45000000;
+  decision = window.classify(10, 1000000000, late);
+  EXPECT_EQ(SampleStatus::Late, decision.status);
+  EXPECT_FALSE(decision.usable_for_cycle);
+  EXPECT_TRUE(decision.record_in_late_pocket);
+
+  auto wrong = fresh;
+  wrong.target_cycle = 9;
+  decision = window.classify(10, 1000000000, wrong);
+  EXPECT_EQ(SampleStatus::WrongCycle, decision.status);
+  EXPECT_FALSE(decision.usable_for_cycle);
+}
+
+TEST(WeaknetPayloadAndBudgetTest, RejectsOversizedRealtimeAndComputesAirBudget) {
+  swarm_sync::weaknet::PayloadGuardConfig payload_config;
+  payload_config.warn_bytes = 800;
+  payload_config.reject_bytes = 1200;
+
+  auto decision = swarm_sync::weaknet::checkPayload(payload_config, 900, "bytes", "sample.v1");
+  EXPECT_EQ(swarm_sync::weaknet::PayloadGuardAction::Warn, decision.action);
+  decision = swarm_sync::weaknet::checkPayload(payload_config, 1300, "bytes", "sample.v1");
+  EXPECT_EQ(swarm_sync::weaknet::PayloadGuardAction::Reject, decision.action);
+  decision = swarm_sync::weaknet::checkPayload(payload_config, 16, "", "sample.v1");
+  EXPECT_EQ(swarm_sync::weaknet::PayloadGuardAction::Reject, decision.action);
+
+  swarm_sync::weaknet::ChannelBudgetInput input;
+  input.channel = "solution";
+  input.publishers = 3;
+  input.effective_fanout = 2;
+  input.frequency_hz = 20.0;
+  input.payload_bytes_p95 = 600;
+  const auto report = swarm_sync::weaknet::computeTrafficBudget({input}, 2000000.0, 1.35);
+  EXPECT_TRUE(report.accepted);
+  EXPECT_GT(report.total_realtime_bps, 0.0);
+
+  const auto rejected = swarm_sync::weaknet::computeTrafficBudget({input}, 1000.0, 1.35);
+  EXPECT_FALSE(rejected.accepted);
+  EXPECT_GT(rejected.utilization_ratio, 1.0);
+}
+
+TEST(WeaknetLinkHealthTest, SummarizesRatiosAndDrivesStateMachine) {
+  swarm_sync::weaknet::LinkHealthWindow window(10);
+  for (int i = 0; i < 8; ++i) {
+    window.observe({SampleStatus::Fresh, 1000000, 0, false, false});
+  }
+  window.observe({SampleStatus::Late, 60000000, 0, true, false});
+  window.observe({SampleStatus::Missing, 0, 0, false, false});
+
+  auto health = window.summarize("uav2", "solution");
+  EXPECT_EQ("uav2", health.peer_id);
+  EXPECT_DOUBLE_EQ(0.8, health.fresh_ratio);
+  EXPECT_GT(health.late_ratio, 0.0);
+  EXPECT_GE(static_cast<uint8_t>(health.state),
+            static_cast<uint8_t>(swarm_sync::weaknet::LinkState::Degraded));
+
+  swarm_sync::weaknet::WeaknetStateMachine machine;
+  const auto transition = machine.update(health);
+  EXPECT_TRUE(transition.changed);
+  EXPECT_EQ(health.state, transition.current);
+  EXPECT_FALSE(transition.reason.empty());
+}
+
+TEST(WeaknetRecommendationAndStaggerTest, SuggestionsOnlyAndStableMicroSlots) {
+  swarm_sync::weaknet::PeerChannelHealth health;
+  health.peer_id = "uav2";
+  health.channel = "solution";
+  health.fresh_ratio = 0.8;
+  health.late_ratio = 0.1;
+  health.missing_ratio = 0.1;
+  health.state = swarm_sync::weaknet::LinkState::Congested;
+  health.primary_reason = "test congestion";
+  swarm_sync::weaknet::RecommendationEngine engine;
+  const auto recommendations = engine.evaluate(42, health, nullptr);
+  ASSERT_GE(recommendations.size(), 2u);
+  EXPECT_EQ(swarm_sync::weaknet::RecommendationType::ChangeFrequency,
+            recommendations.front().type);
+  EXPECT_EQ("change_frequency", swarm_sync::weaknet::toString(recommendations.front().type));
+
+  swarm_sync::weaknet::DeterministicSendStagger stagger({true, 5000000, 500000});
+  const auto a = stagger.decide("s1", "solution", "uav2", 42);
+  const auto b = stagger.decide("s1", "solution", "uav2", 42);
+  EXPECT_TRUE(a.enabled);
+  EXPECT_EQ(a.slot_index, b.slot_index);
+  EXPECT_EQ(a.offset_ns, b.offset_ns);
+  EXPECT_LE(a.offset_ns, 5000000);
 }
 
 int main(int argc, char** argv) {
