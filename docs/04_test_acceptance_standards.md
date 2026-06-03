@@ -108,6 +108,21 @@ ROS1 adapter:
 - Runtime exports to Zenoh.
 - Remote runtime imports to `/remote_solution/<peer>`.
 - Unconfigured topics are not forwarded.
+- Adapter rules are loaded from the `ros1_adapters` rosparam tree and startup
+  fails when a configured tree is invalid or a `ros1_adapters_config` path is
+  provided without loading the corresponding rosparam tree.
+- Each adapter rule declares `name`, `topic`, `channel`, `schema_id`,
+  `payload_type`, `enabled`, `max_payload_bytes`, and `required`.
+- `name`, `channel`, and `schema_id` follow the task-semantic F3 field rules;
+  `topic` starts with `/`; `max_payload_bytes` never exceeds the envelope
+  payload limit.
+- `/tf`, `/tf_static`, `/rosout`, `/clock`, and topic names containing
+  `image`, `pointcloud`, `debug`, `camera`, or `raw` are rejected by default
+  unless the rule explicitly sets `allow_large_payload: true`.
+- Duplicate rule names and duplicate enabled `channel`/`schema_id` mappings
+  are rejected.
+- Runtime status or health reason includes the adapter rule summary, including
+  the enabled/total rule count.
 
 ## Weak-Network Tests
 

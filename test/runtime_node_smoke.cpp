@@ -75,6 +75,7 @@ TEST(RuntimeNodeSmokeTest, PublishesCycleAndServesStatus) {
   EXPECT_EQ("RUNNING", request.response.state);
   EXPECT_TRUE(request.response.clock_ok);
   EXPECT_GE(request.response.current_cycle, last_cycle.cycle_id);
+  EXPECT_NE(std::string::npos, request.response.reason.find("adapters=1/1"));
 }
 
 int main(int argc, char** argv) {

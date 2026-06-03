@@ -10,5 +10,6 @@
     <param name="session_config" value="$(arg session_config)"/>
     <param name="channels_config" value="$(arg channels_config)"/>
     <param name="ros1_adapters_config" value="$(arg ros1_adapters_config)"/>
+    <rosparam command="load" file="$(arg ros1_adapters_config)"/>
   </node>
 </launch>

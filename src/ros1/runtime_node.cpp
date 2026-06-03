@@ -18,6 +18,7 @@
 #include "swarm_sync_core/snapshot_builder.hpp"
 #include "swarm_sync_core/cycle_scheduler.hpp"
 #include "swarm_sync_core/session.hpp"
+#include "swarm_sync_ros1/adapter_config.hpp"
 
 namespace {
 
@@ -78,6 +79,10 @@ class SwarmRuntimeNode {
     pnh.param<double>("poll_rate_hz", poll_rate_hz_, 200.0);
     pnh.param<std::string>("expected_sample_channel", expected_sample_channel_, "runtime_state");
 
+    if (!loadAdapterConfig(pnh)) {
+      return false;
+    }
+
     std::vector<std::string> required_participants;
     if (pnh.getParam("required_participants", required_participants) &&
         !required_participants.empty()) {
@@ -126,7 +131,8 @@ class SwarmRuntimeNode {
 
     ROS_INFO_STREAM("swarm_runtime_node ready: session=" << config_.session_id
                     << " self=" << config_.self_id
-                    << " frequency_hz=" << frequency_hz_);
+                    << " frequency_hz=" << frequency_hz_
+                    << " " << adapter_summary_);
     return true;
   }
 
@@ -209,7 +215,7 @@ class SwarmRuntimeNode {
     response.current_cycle = current_cycle_;
     response.clock_ok = true;
     response.zenoh_connected = false;
-    response.reason = session_.reason();
+    response.reason = runtimeReason();
     return true;
   }
 
@@ -393,12 +399,50 @@ class SwarmRuntimeNode {
     msg.cycle_jitter_p95 = fromNs(last_jitter_ns_);
     msg.cycle_jitter_p99 = fromNs(last_jitter_ns_);
     msg.state = stateName(session_.state());
-    msg.reason = session_.reason();
+    msg.reason = runtimeReason();
     health_pub_.publish(msg);
+  }
+
+  bool loadAdapterConfig(const ros::NodeHandle& pnh) {
+    std::string config_path;
+    pnh.param<std::string>("ros1_adapters_config", config_path, "");
+
+    XmlRpc::XmlRpcValue raw_config;
+    if (pnh.getParam("ros1_adapters", raw_config)) {
+      const auto parsed = swarm_sync_ros1::parseAdapterConfigXmlRpc(raw_config);
+      if (!parsed.ok) {
+        ROS_ERROR_STREAM("failed to load ros1_adapters config: " << parsed.error);
+        return false;
+      }
+      adapter_config_ = parsed.config;
+      adapter_summary_ = swarm_sync_ros1::summarizeAdapterConfig(adapter_config_);
+      ROS_INFO_STREAM("loaded ros1_adapters config: " << adapter_summary_);
+      return true;
+    }
+
+    if (!config_path.empty()) {
+      ROS_ERROR_STREAM("ros1_adapters_config is set to " << config_path
+                       << " but private parameter ros1_adapters was not loaded");
+      return false;
+    }
+
+    adapter_config_ = swarm_sync_ros1::defaultAdapterConfig();
+    adapter_summary_ = swarm_sync_ros1::summarizeAdapterConfig(adapter_config_) + " source=built_in_default";
+    ROS_WARN_STREAM("no ros1_adapters config loaded; using " << adapter_summary_);
+    return true;
+  }
+
+  std::string runtimeReason() const {
+    if (session_.reason().empty()) {
+      return adapter_summary_;
+    }
+    return session_.reason() + "; " + adapter_summary_;
   }
 
   ros::NodeHandle nh_;
   swarm_sync::SessionConfig config_;
+  swarm_sync_ros1::AdapterConfig adapter_config_;
+  std::string adapter_summary_;
   swarm_sync::SessionManager session_;
   swarm_sync::CycleScheduler scheduler_;
   swarm_sync::SnapshotBuilder snapshot_builder_;

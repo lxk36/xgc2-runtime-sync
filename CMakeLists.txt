@@ -36,7 +36,7 @@ generate_messages(
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES swarm_sync_core
+  LIBRARIES swarm_sync_core swarm_sync_ros1_adapter
   CATKIN_DEPENDS message_runtime roscpp std_msgs
 )
 
@@ -56,6 +56,15 @@ add_library(swarm_sync_core
   src/core/transport_keys.cpp
 )
 target_compile_features(swarm_sync_core PUBLIC cxx_std_17)
+
+add_library(swarm_sync_ros1_adapter
+  src/ros1/adapter_config.cpp
+)
+target_compile_features(swarm_sync_ros1_adapter PUBLIC cxx_std_17)
+target_link_libraries(swarm_sync_ros1_adapter
+  swarm_sync_core
+  ${catkin_LIBRARIES}
+)
 
 add_executable(sync_coordinator
   src/sync_coordinator_node.cpp
@@ -77,6 +86,7 @@ add_dependencies(swarm_runtime_node
 )
 target_compile_features(swarm_runtime_node PUBLIC cxx_std_17)
 target_link_libraries(swarm_runtime_node
+  swarm_sync_ros1_adapter
   swarm_sync_core
   ${catkin_LIBRARIES}
 )
@@ -92,7 +102,7 @@ target_link_libraries(swarm_ground_station_node
   ${catkin_LIBRARIES}
 )
 
-install(TARGETS swarm_sync_core sync_coordinator swarm_runtime_node swarm_ground_station_node
+install(TARGETS swarm_sync_core swarm_sync_ros1_adapter sync_coordinator swarm_runtime_node swarm_ground_station_node
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -123,7 +133,7 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(swarm_sync_core_tests test/core_tests.cpp)
   if(TARGET swarm_sync_core_tests)
     target_compile_features(swarm_sync_core_tests PUBLIC cxx_std_17)
-    target_link_libraries(swarm_sync_core_tests swarm_sync_core ${catkin_LIBRARIES})
+    target_link_libraries(swarm_sync_core_tests swarm_sync_ros1_adapter swarm_sync_core ${catkin_LIBRARIES})
   endif()
 
   add_executable(runtime_node_smoke_test EXCLUDE_FROM_ALL test/runtime_node_smoke.cpp)

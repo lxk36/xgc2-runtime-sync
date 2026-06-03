@@ -14,6 +14,7 @@
 #include "swarm_sync_core/snapshot_builder.hpp"
 #include "swarm_sync_core/transport.hpp"
 #include "swarm_sync_core/transport_keys.hpp"
+#include "swarm_sync_ros1/adapter_config.hpp"
 
 namespace {
 
@@ -315,6 +316,124 @@ TEST(EnvelopeCodecTest, RejectsIllegalKeyFieldCharacters) {
   EXPECT_FALSE(validation.ok);
   EXPECT_NE(std::string::npos, validation.error.find("task_id"));
   EXPECT_THROW(codec.encode(envelope), std::invalid_argument);
+}
+
+TEST(Ros1AdapterConfigTest, AcceptsValidControlledRule) {
+  XmlRpc::XmlRpcValue root;
+  root["deny_by_default"] = true;
+  root["rules"] = XmlRpc::XmlRpcValue();
+  root["rules"].setSize(1);
+  root["rules"][0]["name"] = "local_solution";
+  root["rules"][0]["topic"] = "/local_solution";
+  root["rules"][0]["channel"] = "solution";
+  root["rules"][0]["schema_id"] = "user.solution.v1";
+  root["rules"][0]["payload_type"] = "bytes";
+  root["rules"][0]["enabled"] = true;
+  root["rules"][0]["max_payload_bytes"] = 4096;
+  root["rules"][0]["required"] = true;
+
+  const auto parsed = swarm_sync_ros1::parseAdapterConfigXmlRpc(root);
+
+  ASSERT_TRUE(parsed.ok) << parsed.error;
+  EXPECT_TRUE(parsed.config.deny_by_default);
+  ASSERT_EQ(1u, parsed.config.rules.size());
+  EXPECT_EQ(1u, parsed.config.enabledRuleCount());
+  EXPECT_EQ("/local_solution", parsed.config.rules.front().topic);
+  EXPECT_EQ("solution", parsed.config.rules.front().channel);
+  EXPECT_EQ("user.solution.v1", parsed.config.rules.front().schema_id);
+  EXPECT_TRUE(parsed.config.rules.front().required);
+}
+
+TEST(Ros1AdapterConfigTest, RejectsInvalidTopic) {
+  swarm_sync_ros1::AdapterConfig config;
+  swarm_sync_ros1::AdapterRule rule;
+  rule.name = "bad_topic";
+  rule.topic = "local_solution";
+  rule.channel = "solution";
+  rule.schema_id = "user.solution.v1";
+  config.rules.push_back(rule);
+
+  const auto result = swarm_sync_ros1::validateAdapterConfig(config);
+
+  EXPECT_FALSE(result.ok);
+  EXPECT_NE(std::string::npos, result.error.find("topic"));
+}
+
+TEST(Ros1AdapterConfigTest, RejectsDefaultDeniedTopicsWithoutExplicitOverride) {
+  EXPECT_TRUE(swarm_sync_ros1::isDefaultDeniedTopic("/tf"));
+  EXPECT_TRUE(swarm_sync_ros1::isDefaultDeniedTopic("/camera/image_raw"));
+
+  swarm_sync_ros1::AdapterConfig config;
+  swarm_sync_ros1::AdapterRule rule;
+  rule.name = "camera_image";
+  rule.topic = "/camera/image_raw";
+  rule.channel = "camera_image";
+  rule.schema_id = "user.camera_image.v1";
+  config.rules.push_back(rule);
+
+  const auto result = swarm_sync_ros1::validateAdapterConfig(config);
+
+  EXPECT_FALSE(result.ok);
+  EXPECT_NE(std::string::npos, result.error.find("default-denied"));
+}
+
+TEST(Ros1AdapterConfigTest, AllowsLargePayloadWithExplicitOverrideWithinEnvelopeLimit) {
+  swarm_sync_ros1::AdapterConfig config;
+  swarm_sync_ros1::AdapterRule rule;
+  rule.name = "camera_image";
+  rule.topic = "/camera/image_raw";
+  rule.channel = "camera_image";
+  rule.schema_id = "user.camera_image.v1";
+  rule.allow_large_payload = true;
+  rule.max_payload_bytes = kDefaultMaxPayloadBytes;
+  config.rules.push_back(rule);
+
+  const auto result = swarm_sync_ros1::validateAdapterConfig(config);
+
+  ASSERT_TRUE(result.ok) << result.error;
+  ASSERT_EQ(1u, result.config.rules.size());
+  EXPECT_EQ(kDefaultMaxPayloadBytes, result.config.rules.front().max_payload_bytes);
+}
+
+TEST(Ros1AdapterConfigTest, RejectsDuplicateRuleName) {
+  swarm_sync_ros1::AdapterConfig config;
+  swarm_sync_ros1::AdapterRule first;
+  first.name = "solution";
+  first.topic = "/local_solution";
+  first.channel = "solution";
+  first.schema_id = "user.solution.v1";
+  config.rules.push_back(first);
+
+  swarm_sync_ros1::AdapterRule second = first;
+  second.topic = "/other_solution";
+  second.channel = "other_solution";
+  second.schema_id = "user.other_solution.v1";
+  config.rules.push_back(second);
+
+  const auto result = swarm_sync_ros1::validateAdapterConfig(config);
+
+  EXPECT_FALSE(result.ok);
+  EXPECT_NE(std::string::npos, result.error.find("duplicate rule name"));
+}
+
+TEST(Ros1AdapterConfigTest, RejectsEnabledChannelSchemaConflict) {
+  swarm_sync_ros1::AdapterConfig config;
+  swarm_sync_ros1::AdapterRule first;
+  first.name = "solution_a";
+  first.topic = "/solution_a";
+  first.channel = "solution";
+  first.schema_id = "user.solution.v1";
+  config.rules.push_back(first);
+
+  swarm_sync_ros1::AdapterRule second = first;
+  second.name = "solution_b";
+  second.topic = "/solution_b";
+  config.rules.push_back(second);
+
+  const auto result = swarm_sync_ros1::validateAdapterConfig(config);
+
+  EXPECT_FALSE(result.ok);
+  EXPECT_NE(std::string::npos, result.error.find("channel/schema"));
 }
 
 TEST(EnvelopeCodecTest, DetectsMalformedEncodedData) {

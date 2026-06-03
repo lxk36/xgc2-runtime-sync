@@ -11,6 +11,18 @@
     <param name="poll_rate_hz" value="100.0"/>
     <param name="start_delay_s" value="0.05"/>
     <param name="auto_start" value="true"/>
+    <rosparam param="ros1_adapters">
+deny_by_default: true
+rules:
+  - name: smoke_solution
+    topic: /local_solution
+    channel: solution
+    schema_id: user.solution.v1
+    payload_type: bytes
+    enabled: true
+    max_payload_bytes: 4096
+    required: false
+    </rosparam>
   </node>
 
   <test test-name="runtime_node_smoke"
