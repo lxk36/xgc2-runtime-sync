@@ -1,0 +1,8 @@
+string session_id
+---
+bool running
+string state
+uint64 current_cycle
+bool clock_ok
+bool zenoh_connected
+string reason

@@ -1,0 +1,10 @@
+<launch>
+  <arg name="session_config" default="$(find periodic_sync)/config/session.yaml"/>
+
+  <node pkg="periodic_sync"
+        type="swarm_ground_station_node"
+        name="swarm_ground_station_node"
+        output="screen">
+    <param name="session_config" value="$(arg session_config)"/>
+  </node>
+</launch>

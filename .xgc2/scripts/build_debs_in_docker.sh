@@ -61,7 +61,9 @@ docker run --rm \
       ros-noetic-message-generation \
       ros-noetic-message-runtime \
       ros-noetic-roscpp \
-      ros-noetic-rospack
+      ros-noetic-rospack \
+      ros-noetic-rosunit \
+      ros-noetic-std-msgs
 
     rm -rf /workspace/work/src /workspace/work/build /workspace/work/devel /workspace/work/install-root
     mkdir -p /workspace/work/src/periodic_sync
@@ -69,6 +71,8 @@ docker run --rm \
 
     cd /workspace/work
     source /opt/ros/noetic/setup.bash
+    catkin_make run_tests_periodic_sync
+    catkin_test_results
 
     catkin_make \
       -DCMAKE_INSTALL_PREFIX=/opt/ros/noetic \

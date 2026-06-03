@@ -1,8 +1,9 @@
 schema: xgc2.product.v1
 id: xgc2-runtime-sync
 name: XGC2 Runtime Sync
+version: 1.1.0-1
 kind: ros1-apt
-summary: Runtime synchronization messages and coordinator for XGC2 ROS1 multi-agent systems.
+summary: Runtime synchronization coordinator, messages, and swarm sync core for XGC2 ROS1 multi-agent systems.
 
 ros:
   distro: noetic
@@ -27,4 +28,6 @@ ownership:
   paths:
     - /opt/ros/noetic/share/periodic_sync
     - /opt/ros/noetic/include/periodic_sync
+    - /opt/ros/noetic/include/swarm_sync_core
     - /opt/ros/noetic/lib/periodic_sync/sync_coordinator
+    - /opt/ros/noetic/lib/periodic_sync/swarm_runtime_node

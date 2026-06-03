@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
 INSTALL_ROOT=""
 OUTPUT_DIR=""
 ROS_DISTRO="${ROS_DISTRO:-noetic}"
-VERSION="${PACKAGE_VERSION:-1.0.0-1}"
 PACKAGE="ros-noetic-xgc2-runtime-sync"
 ROS_PACKAGE="periodic_sync"
+
+product_version() {
+  awk -F': *' '/^version:[[:space:]]*/ {print $2; exit}' "${REPO_ROOT}/.xgc2/product.yml"
+}
+
+VERSION="${PACKAGE_VERSION:-$(product_version)}"
+VERSION="${VERSION:-1.1.0-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -57,6 +66,8 @@ mkdir -p "${pkg_root}"
 
 copy_path "${PREFIX_ROOT}/share/${ROS_PACKAGE}" "${pkg_root}"
 copy_path "${PREFIX_ROOT}/include/${ROS_PACKAGE}" "${pkg_root}"
+copy_path "${PREFIX_ROOT}/include/swarm_sync_core" "${pkg_root}"
+copy_path "${PREFIX_ROOT}/include/swarm_sync_ros1" "${pkg_root}"
 copy_path "${PREFIX_ROOT}/lib/${ROS_PACKAGE}" "${pkg_root}"
 copy_path "${PREFIX_ROOT}/lib/python3/dist-packages/${ROS_PACKAGE}" "${pkg_root}"
 copy_path "${PREFIX_ROOT}/share/gennodejs/ros/${ROS_PACKAGE}" "${pkg_root}"
@@ -71,8 +82,8 @@ Section: misc
 Priority: optional
 Architecture: ${ARCH}
 Maintainer: XGC2 <apt@example.com>
-Depends: ros-noetic-message-runtime, ros-noetic-roscpp
-Description: XGC2 runtime synchronization coordinator and messages for ROS1
+Depends: ros-noetic-message-runtime, ros-noetic-roscpp, ros-noetic-std-msgs
+Description: XGC2 runtime synchronization coordinator, messages, and swarm sync core for ROS1
 EOF
 printf 'xgc2-runtime-sync package\n' > "${pkg_root}/usr/share/doc/${PACKAGE}/README"
 chmod 0755 "${pkg_root}/DEBIAN"

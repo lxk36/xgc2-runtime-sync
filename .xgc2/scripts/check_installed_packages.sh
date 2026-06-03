@@ -7,7 +7,10 @@ source "/opt/ros/${ROS_DISTRO}/setup.bash"
 dpkg -s ros-noetic-xgc2-runtime-sync >/dev/null
 test "$(rospack find periodic_sync)" = "/opt/ros/${ROS_DISTRO}/share/periodic_sync"
 test -x "/opt/ros/${ROS_DISTRO}/lib/periodic_sync/sync_coordinator"
+test -x "/opt/ros/${ROS_DISTRO}/lib/periodic_sync/swarm_runtime_node"
 test -f "/opt/ros/${ROS_DISTRO}/include/periodic_sync/SyncTrigger.h"
+test -f "/opt/ros/${ROS_DISTRO}/include/periodic_sync/SyncedCycle.h"
+test -f "/opt/ros/${ROS_DISTRO}/include/swarm_sync_core/cycle_scheduler.hpp"
 
 while IFS= read -r file; do
   if ! file -b "${file}" | grep -q '^ELF'; then

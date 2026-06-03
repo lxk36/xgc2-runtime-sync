@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
   <name>periodic_sync</name>
-  <version>1.0.0</version>
-  <description>ROS1 messages and coordinator for synchronized periodic process triggering.</description>
+  <version>1.1.0</version>
+  <description>ROS1 runtime synchronization coordinator, messages, and swarm sync core.</description>
 
   <maintainer email="lxk@todo.todo">lxk</maintainer>
   <license>TODO</license>
@@ -11,11 +11,18 @@
 
   <build_depend>message_generation</build_depend>
   <build_depend>roscpp</build_depend>
+  <build_depend>std_msgs</build_depend>
 
   <build_export_depend>roscpp</build_export_depend>
+  <build_export_depend>std_msgs</build_export_depend>
 
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>roscpp</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <test_depend>rosunit</test_depend>
+  <test_depend>rostest</test_depend>
+  <test_depend>rospy</test_depend>
 
   <export>
   </export>

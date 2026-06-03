@@ -1,0 +1,18 @@
+ros1_adapters:
+  export:
+    - ros_topic: /local_solution
+      ros_type: user_msgs/Solution
+      channel: solution
+      schema_id: user.solution.v1
+      max_hz: 20.0
+      target_cycle_offset: 1
+
+  import:
+    - channel: solution
+      ros_topic_prefix: /remote_solution
+      publish_mode: per_peer
+      # For example, remote peer uav02 publishes to /remote_solution/uav02.
+      drop_unusable_samples: true
+
+  # Do not forward any topic unless it is explicitly configured.
+  deny_by_default: true
