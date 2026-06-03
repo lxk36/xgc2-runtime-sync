@@ -1,23 +1,30 @@
 #include <algorithm>
 #include <cstdint>
+#include <map>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <ros/ros.h>
 
+#include "periodic_sync/BudgetReport.h"
 #include "periodic_sync/GetRuntimeStatus.h"
 #include "periodic_sync/CycleSnapshot.h"
+#include "periodic_sync/PeerLinkHealth.h"
 #include "periodic_sync/PeerSampleStatus.h"
+#include "periodic_sync/Recommendation.h"
 #include "periodic_sync/RuntimeHealth.h"
 #include "periodic_sync/SampleStats.h"
 #include "periodic_sync/StartSession.h"
 #include "periodic_sync/StopSession.h"
 #include "periodic_sync/SyncedCycle.h"
+#include "periodic_sync/WeakNetState.h"
 #include "swarm_sync_core/sample_buffer.hpp"
 #include "swarm_sync_core/snapshot_builder.hpp"
 #include "swarm_sync_core/cycle_scheduler.hpp"
 #include "swarm_sync_core/session.hpp"
+#include "swarm_sync_core/weaknet/weaknet.hpp"
 #include "swarm_sync_ros1/adapter_config.hpp"
 
 namespace {
@@ -63,6 +70,37 @@ std::string stateName(swarm_sync::SessionState state) {
   return "UNKNOWN";
 }
 
+std::string linkKey(const std::string& peer, const std::string& channel) {
+  return peer + "|" + channel;
+}
+
+std::string jsonEscape(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  for (const char c : text) {
+    if (c == '"' || c == '\\') {
+      out.push_back('\\');
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
+std::string evidenceJson(const std::map<std::string, double>& evidence) {
+  std::ostringstream os;
+  os << "{";
+  bool first = true;
+  for (const auto& item : evidence) {
+    if (!first) {
+      os << ",";
+    }
+    first = false;
+    os << "\"" << jsonEscape(item.first) << "\":" << item.second;
+  }
+  os << "}";
+  return os.str();
+}
+
 }  // namespace
 
 class SwarmRuntimeNode {
@@ -78,6 +116,12 @@ class SwarmRuntimeNode {
     pnh.param<double>("start_delay_s", start_delay_s_, 0.1);
     pnh.param<double>("poll_rate_hz", poll_rate_hz_, 200.0);
     pnh.param<std::string>("expected_sample_channel", expected_sample_channel_, "runtime_state");
+    pnh.param<bool>("weaknet_enabled", weaknet_enabled_, true);
+    pnh.param<double>("weaknet_budget_max_realtime_bps", weaknet_budget_max_realtime_bps_, 2000000.0);
+    pnh.param<double>("weaknet_budget_safety_factor", weaknet_budget_safety_factor_, 1.35);
+    pnh.param<int>("weaknet_payload_bytes_p95", weaknet_payload_bytes_p95_, 600);
+    pnh.param<double>("weaknet_receive_cutoff_ratio", weaknet_receive_cutoff_ratio_, 0.80);
+    pnh.param<double>("weaknet_late_record_window_ratio", weaknet_late_record_window_ratio_, 1.0);
 
     if (!loadAdapterConfig(pnh)) {
       return false;
@@ -100,6 +144,9 @@ class SwarmRuntimeNode {
     }
     config_.period_ns = *period_ns;
     config_.epoch_ns = toNs(ros::Time::now()) + static_cast<int64_t>(start_delay_s_ * 1.0e9);
+    if (!configureWeaknet()) {
+      return false;
+    }
     configureExpectedSamples();
 
     if (!session_.configure(config_)) {
@@ -120,6 +167,10 @@ class SwarmRuntimeNode {
     snapshot_pub_ = nh_.advertise<periodic_sync::CycleSnapshot>("cycle_snapshot", 10, false);
     sample_stats_pub_ = nh_.advertise<periodic_sync::SampleStats>("sample_stats", 10, false);
     health_pub_ = nh_.advertise<periodic_sync::RuntimeHealth>("/swarm_sync/runtime_health", 2, true);
+    peer_link_health_pub_ = nh_.advertise<periodic_sync::PeerLinkHealth>("peer_link_health", 10, false);
+    weaknet_state_pub_ = nh_.advertise<periodic_sync::WeakNetState>("weaknet_state", 10, false);
+    recommendation_pub_ = nh_.advertise<periodic_sync::Recommendation>("recommendation", 10, false);
+    budget_pub_ = nh_.advertise<periodic_sync::BudgetReport>("budget_report", 1, true);
     start_srv_ = nh_.advertiseService("/swarm_sync/start_session", &SwarmRuntimeNode::startCallback, this);
     stop_srv_ = nh_.advertiseService("/swarm_sync/stop_session", &SwarmRuntimeNode::stopCallback, this);
     status_srv_ = nh_.advertiseService("/swarm_sync/get_runtime_status", &SwarmRuntimeNode::statusCallback, this);
@@ -132,7 +183,9 @@ class SwarmRuntimeNode {
     ROS_INFO_STREAM("swarm_runtime_node ready: session=" << config_.session_id
                     << " self=" << config_.self_id
                     << " frequency_hz=" << frequency_hz_
-                    << " " << adapter_summary_);
+                    << " " << adapter_summary_
+                    << " weaknet=" << weaknet_summary_);
+    publishBudget();
     return true;
   }
 
@@ -280,6 +333,7 @@ class SwarmRuntimeNode {
     const auto snapshot_msg = toSnapshotMsg(snapshot, stamp);
     snapshot_pub_.publish(snapshot_msg);
     sample_stats_pub_.publish(toSampleStatsMsg(snapshot, stamp));
+    publishWeaknet(snapshot, stamp);
   }
 
   periodic_sync::CycleSnapshot toSnapshotMsg(const swarm_sync::CycleSnapshot& snapshot,
@@ -403,6 +457,148 @@ class SwarmRuntimeNode {
     health_pub_.publish(msg);
   }
 
+  bool configureWeaknet() {
+    weaknet_profile_ = swarm_sync::weaknet::defaultProfileFor(
+        swarm_sync::weaknet::ChannelKind::RealtimeSample);
+    std::string error;
+    if (!swarm_sync::weaknet::validateChannelProfile(weaknet_profile_, &error)) {
+      ROS_ERROR_STREAM("invalid weaknet realtime profile: " << error);
+      return false;
+    }
+    weaknet_budget_ = computeBudgetReport();
+    if (!weaknet_budget_.accepted) {
+      ROS_WARN_STREAM("weaknet traffic budget exceeded: ratio="
+                      << weaknet_budget_.utilization_ratio
+                      << " reason=" << weaknet_budget_.reason);
+    }
+    weaknet_summary_ = "profile=" + weaknet_profile_.name +
+                       " qos=" + swarm_sync::weaknet::toString(weaknet_profile_.qos.reliability) +
+                       "/" + swarm_sync::weaknet::toString(weaknet_profile_.qos.congestion) +
+                       " budget_ratio=" + std::to_string(weaknet_budget_.utilization_ratio);
+    return true;
+  }
+
+  swarm_sync::weaknet::BudgetReport computeBudgetReport() const {
+    const uint32_t participants =
+        static_cast<uint32_t>(std::max<size_t>(1, config_.required_participants.size()));
+    swarm_sync::weaknet::ChannelBudgetInput input;
+    input.channel = expected_sample_channel_;
+    input.publishers = participants;
+    input.effective_fanout = participants > 0 ? participants - 1 : 0;
+    input.frequency_hz = frequency_hz_;
+    input.payload_bytes_p95 = static_cast<uint32_t>(std::max(0, weaknet_payload_bytes_p95_));
+    return swarm_sync::weaknet::computeTrafficBudget({input},
+                                                     weaknet_budget_max_realtime_bps_,
+                                                     weaknet_budget_safety_factor_);
+  }
+
+  void publishBudget() {
+    periodic_sync::BudgetReport msg;
+    msg.header.stamp = ros::Time::now();
+    msg.session_id = config_.session_id;
+    msg.accepted = weaknet_budget_.accepted;
+    msg.total_realtime_bps = weaknet_budget_.total_realtime_bps;
+    msg.max_realtime_bps = weaknet_budget_.max_realtime_bps;
+    msg.utilization_ratio = weaknet_budget_.utilization_ratio;
+    msg.report_json = "{\"reason\":\"" + jsonEscape(weaknet_budget_.reason) + "\"}";
+    budget_pub_.publish(msg);
+  }
+
+  void publishWeaknet(const swarm_sync::CycleSnapshot& snapshot, const ros::Time& stamp) {
+    if (!weaknet_enabled_) {
+      return;
+    }
+    swarm_sync::weaknet::LinkState worst_state = swarm_sync::weaknet::LinkState::Good;
+    std::string worst_reason = "healthy";
+
+    for (const auto& sample : snapshot.samples) {
+      const auto key = linkKey(sample.peer_id, sample.channel);
+      auto& window = link_windows_[key];
+      swarm_sync::weaknet::LinkHealthSample health_sample;
+      health_sample.status = sample.status;
+      health_sample.latency_ns = sample.receive_latency_ns;
+      health_sample.late_pocket = sample.late_for_this_cycle;
+      window.observe(health_sample);
+
+      auto health = window.summarize(sample.peer_id, sample.channel);
+      auto& state_machine = link_states_[key];
+      const auto transition = state_machine.update(health);
+      health.state = state_machine.current();
+      if (static_cast<uint8_t>(health.state) > static_cast<uint8_t>(worst_state)) {
+        worst_state = health.state;
+        worst_reason = health.primary_reason;
+      }
+      peer_link_health_pub_.publish(toPeerLinkHealthMsg(health, stamp));
+      if (transition.changed) {
+        weaknet_state_pub_.publish(toWeakNetStateMsg(transition, snapshot.cycle_id, stamp));
+      }
+      for (const auto& recommendation :
+           recommendation_engine_.evaluate(snapshot.cycle_id, health, &weaknet_budget_)) {
+        recommendation_pub_.publish(toRecommendationMsg(recommendation, stamp));
+      }
+    }
+
+    weaknet_state_ = worst_state;
+    weaknet_reason_ = worst_reason;
+  }
+
+  periodic_sync::PeerLinkHealth toPeerLinkHealthMsg(
+      const swarm_sync::weaknet::PeerChannelHealth& health,
+      const ros::Time& stamp) const {
+    periodic_sync::PeerLinkHealth msg;
+    msg.header.stamp = stamp;
+    msg.local_node_id = config_.self_id;
+    msg.peer_id = health.peer_id;
+    msg.channel = health.channel;
+    msg.fresh_ratio = health.fresh_ratio;
+    msg.late_ratio = health.late_ratio;
+    msg.missing_ratio = health.missing_ratio;
+    msg.duplicate_ratio = health.duplicate_ratio;
+    msg.wrong_cycle_ratio = health.wrong_cycle_ratio;
+    msg.bad_payload_ratio = health.bad_payload_ratio;
+    msg.rx_latency_p50_ns = health.rx_latency_p50_ns;
+    msg.rx_latency_p95_ns = health.rx_latency_p95_ns;
+    msg.rx_latency_p99_ns = health.rx_latency_p99_ns;
+    msg.seq_gap_count = health.seq_gap_count;
+    msg.late_pocket_count = health.late_pocket_count;
+    msg.oversized_drop_count = health.oversized_drop_count;
+    msg.state = static_cast<uint8_t>(health.state);
+    msg.primary_reason = health.primary_reason;
+    return msg;
+  }
+
+  periodic_sync::WeakNetState toWeakNetStateMsg(
+      const swarm_sync::weaknet::StateTransition& transition,
+      uint64_t cycle_id,
+      const ros::Time& stamp) const {
+    periodic_sync::WeakNetState msg;
+    msg.header.stamp = stamp;
+    msg.node_id = config_.self_id;
+    msg.previous_state = static_cast<uint8_t>(transition.previous);
+    msg.current_state = static_cast<uint8_t>(transition.current);
+    msg.reason = transition.reason;
+    msg.evidence_json = evidenceJson(transition.evidence);
+    msg.cycle_id = cycle_id;
+    return msg;
+  }
+
+  periodic_sync::Recommendation toRecommendationMsg(
+      const swarm_sync::weaknet::RuntimeRecommendation& recommendation,
+      const ros::Time& stamp) const {
+    periodic_sync::Recommendation msg;
+    msg.header.stamp = stamp;
+    msg.node_id = config_.self_id;
+    msg.cycle_id = recommendation.cycle_id;
+    msg.level = static_cast<uint8_t>(recommendation.level);
+    msg.type = swarm_sync::weaknet::toString(recommendation.type);
+    msg.channel = recommendation.channel;
+    msg.peer_id = recommendation.peer;
+    msg.confidence = recommendation.confidence;
+    msg.reason = recommendation.reason;
+    msg.evidence_json = evidenceJson(recommendation.evidence);
+    return msg;
+  }
+
   bool loadAdapterConfig(const ros::NodeHandle& pnh) {
     std::string config_path;
     pnh.param<std::string>("ros1_adapters_config", config_path, "");
@@ -434,9 +630,12 @@ class SwarmRuntimeNode {
 
   std::string runtimeReason() const {
     if (session_.reason().empty()) {
-      return adapter_summary_;
+      return adapter_summary_ + "; " + weaknet_summary_ + "; weaknet_state=" +
+             swarm_sync::weaknet::toString(weaknet_state_) + " reason=" + weaknet_reason_;
     }
-    return session_.reason() + "; " + adapter_summary_;
+    return session_.reason() + "; " + adapter_summary_ + "; " + weaknet_summary_ +
+           "; weaknet_state=" + swarm_sync::weaknet::toString(weaknet_state_) +
+           " reason=" + weaknet_reason_;
   }
 
   ros::NodeHandle nh_;
@@ -447,11 +646,21 @@ class SwarmRuntimeNode {
   swarm_sync::CycleScheduler scheduler_;
   swarm_sync::SnapshotBuilder snapshot_builder_;
   swarm_sync::SampleBuffer sample_buffer_;
+  swarm_sync::weaknet::ChannelProfile weaknet_profile_;
+  swarm_sync::weaknet::BudgetReport weaknet_budget_;
+  swarm_sync::weaknet::RecommendationEngine recommendation_engine_;
+  std::map<std::string, swarm_sync::weaknet::LinkHealthWindow> link_windows_;
+  std::map<std::string, swarm_sync::weaknet::WeaknetStateMachine> link_states_;
+  swarm_sync::weaknet::LinkState weaknet_state_{swarm_sync::weaknet::LinkState::Good};
   std::vector<swarm_sync::ExpectedSample> expected_samples_;
   ros::Publisher cycle_pub_;
   ros::Publisher snapshot_pub_;
   ros::Publisher sample_stats_pub_;
   ros::Publisher health_pub_;
+  ros::Publisher peer_link_health_pub_;
+  ros::Publisher weaknet_state_pub_;
+  ros::Publisher recommendation_pub_;
+  ros::Publisher budget_pub_;
   ros::ServiceServer start_srv_;
   ros::ServiceServer stop_srv_;
   ros::ServiceServer status_srv_;
@@ -461,8 +670,16 @@ class SwarmRuntimeNode {
   double frequency_hz_ = 20.0;
   double poll_rate_hz_ = 200.0;
   double start_delay_s_ = 0.1;
+  double weaknet_budget_max_realtime_bps_ = 2000000.0;
+  double weaknet_budget_safety_factor_ = 1.35;
+  double weaknet_receive_cutoff_ratio_ = 0.80;
+  double weaknet_late_record_window_ratio_ = 1.0;
   std::string expected_sample_channel_ = "runtime_state";
+  std::string weaknet_summary_ = "weaknet=unconfigured";
+  std::string weaknet_reason_ = "healthy";
+  int weaknet_payload_bytes_p95_ = 600;
   bool auto_start_ = true;
+  bool weaknet_enabled_ = true;
 };
 
 int main(int argc, char** argv) {
