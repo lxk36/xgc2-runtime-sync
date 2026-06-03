@@ -1,0 +1,10 @@
+std_msgs/Header header
+string node_id
+uint64 cycle_id
+uint8 level
+string type
+string channel
+string peer_id
+float64 confidence
+string reason
+string evidence_json

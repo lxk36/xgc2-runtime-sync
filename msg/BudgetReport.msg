@@ -1,0 +1,7 @@
+std_msgs/Header header
+string session_id
+bool accepted
+float64 total_realtime_bps
+float64 max_realtime_bps
+float64 utilization_ratio
+string report_json
