@@ -1,15 +1,21 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <ros/ros.h>
 
 #include "periodic_sync/GetRuntimeStatus.h"
+#include "periodic_sync/CycleSnapshot.h"
+#include "periodic_sync/PeerSampleStatus.h"
 #include "periodic_sync/RuntimeHealth.h"
+#include "periodic_sync/SampleStats.h"
 #include "periodic_sync/StartSession.h"
 #include "periodic_sync/StopSession.h"
 #include "periodic_sync/SyncedCycle.h"
+#include "swarm_sync_core/sample_buffer.hpp"
+#include "swarm_sync_core/snapshot_builder.hpp"
 #include "swarm_sync_core/cycle_scheduler.hpp"
 #include "swarm_sync_core/session.hpp"
 
@@ -25,6 +31,13 @@ int64_t toNs(const ros::Duration& duration) {
 
 ros::Duration fromNs(int64_t ns) {
   return ros::Duration(static_cast<double>(ns) / 1.0e9);
+}
+
+ros::Time timeFromNs(int64_t ns) {
+  if (ns <= 0) {
+    return ros::Time(0);
+  }
+  return ros::Time().fromNSec(static_cast<uint64_t>(ns));
 }
 
 uint8_t toMsgClockQuality(swarm_sync::ClockQuality quality) {
@@ -63,8 +76,15 @@ class SwarmRuntimeNode {
     pnh.param<bool>("auto_start", auto_start_, true);
     pnh.param<double>("start_delay_s", start_delay_s_, 0.1);
     pnh.param<double>("poll_rate_hz", poll_rate_hz_, 200.0);
+    pnh.param<std::string>("expected_sample_channel", expected_sample_channel_, "runtime_state");
 
-    config_.required_participants = {config_.self_id};
+    std::vector<std::string> required_participants;
+    if (pnh.getParam("required_participants", required_participants) &&
+        !required_participants.empty()) {
+      config_.required_participants = required_participants;
+    } else {
+      config_.required_participants = {config_.self_id};
+    }
     const auto period_ns = swarm_sync::CycleScheduler::periodNsFromFrequencyHz(frequency_hz_);
     if (!period_ns) {
       ROS_ERROR_STREAM("frequency_hz must be in ["
@@ -75,6 +95,7 @@ class SwarmRuntimeNode {
     }
     config_.period_ns = *period_ns;
     config_.epoch_ns = toNs(ros::Time::now()) + static_cast<int64_t>(start_delay_s_ * 1.0e9);
+    configureExpectedSamples();
 
     if (!session_.configure(config_)) {
       ROS_ERROR_STREAM("failed to configure swarm runtime session: " << session_.reason());
@@ -91,6 +112,8 @@ class SwarmRuntimeNode {
     }
 
     cycle_pub_ = nh_.advertise<periodic_sync::SyncedCycle>("/swarm_sync/cycle", 10, false);
+    snapshot_pub_ = nh_.advertise<periodic_sync::CycleSnapshot>("cycle_snapshot", 10, false);
+    sample_stats_pub_ = nh_.advertise<periodic_sync::SampleStats>("sample_stats", 10, false);
     health_pub_ = nh_.advertise<periodic_sync::RuntimeHealth>("/swarm_sync/runtime_health", 2, true);
     start_srv_ = nh_.advertiseService("/swarm_sync/start_session", &SwarmRuntimeNode::startCallback, this);
     stop_srv_ = nh_.advertiseService("/swarm_sync/stop_session", &SwarmRuntimeNode::stopCallback, this);
@@ -118,6 +141,7 @@ class SwarmRuntimeNode {
     if (!session_.configure(config_)) {
       return false;
     }
+    configureExpectedSamples();
     if (!session_.arm(epoch_ns, clock)) {
       return false;
     }
@@ -202,6 +226,7 @@ class SwarmRuntimeNode {
       current_cycle_ = event->cycle_id;
       last_jitter_ns_ = event->jitter_ns;
       publishCycle(*event, now);
+      publishSnapshot(*event, now, clock);
       publishHealth();
     }
   }
@@ -223,6 +248,132 @@ class SwarmRuntimeNode {
     msg.session_running = session_.running();
     msg.runtime_degraded = false;
     cycle_pub_.publish(msg);
+  }
+
+  void publishSnapshot(const swarm_sync::CycleEvent& event,
+                       const ros::Time& stamp,
+                       const swarm_sync::ClockState& clock) {
+    swarm_sync::SnapshotBuildRequest request;
+    request.session_id = config_.session_id;
+    request.task_id = config_.task_id;
+    request.self_id = config_.self_id;
+    request.cycle_id = event.cycle_id;
+    request.cycle_start_ns = event.expected_time_ns;
+    request.period_ns = event.period_ns;
+    request.build_time_ns = toNs(stamp);
+    request.local_clock = clock;
+    request.local_runtime.running = session_.running();
+    request.local_runtime.zenoh_connected = false;
+    request.local_runtime.current_cycle = event.cycle_id;
+    request.local_runtime.jitter_ns = event.jitter_ns;
+    request.local_runtime.state = stateName(session_.state());
+    request.local_runtime.reason = session_.reason();
+    request.expected_samples = expected_samples_;
+
+    const auto snapshot = snapshot_builder_.build(request, sample_buffer_);
+    const auto snapshot_msg = toSnapshotMsg(snapshot, stamp);
+    snapshot_pub_.publish(snapshot_msg);
+    sample_stats_pub_.publish(toSampleStatsMsg(snapshot, stamp));
+  }
+
+  periodic_sync::CycleSnapshot toSnapshotMsg(const swarm_sync::CycleSnapshot& snapshot,
+                                             const ros::Time& stamp) const {
+    periodic_sync::CycleSnapshot msg;
+    msg.header.stamp = stamp;
+    msg.team_id = config_.team_id;
+    msg.session_id = snapshot.session_id;
+    msg.task_id = snapshot.task_id;
+    msg.self_id = snapshot.self_id;
+    msg.cycle_id = snapshot.cycle_id;
+    msg.cycle_start_time = timeFromNs(snapshot.t_cycle_start_ns);
+    msg.period = fromNs(snapshot.period_ns);
+    msg.samples.reserve(snapshot.samples.size());
+    for (const auto& sample : snapshot.samples) {
+      msg.samples.push_back(toPeerSampleStatusMsg(sample));
+    }
+    msg.fresh_count = snapshot.stats.fresh_count;
+    msg.missing_count = snapshot.stats.missing_count;
+    msg.late_count = snapshot.stats.late_count;
+    msg.wrong_cycle_count = snapshot.stats.wrong_cycle_count;
+    msg.bad_count = snapshot.stats.bad_count;
+    msg.all_required_fresh = snapshot.all_required_fresh;
+    msg.all_required_usable = snapshot.all_required_usable;
+    msg.local_clock_ok = snapshot.local_clock.clock_ok;
+    msg.runtime_degraded = !snapshot.local_runtime.running || !snapshot.local_clock.clock_ok;
+    return msg;
+  }
+
+  periodic_sync::PeerSampleStatus toPeerSampleStatusMsg(
+      const swarm_sync::PeerSampleView& sample) const {
+    periodic_sync::PeerSampleStatus msg;
+    msg.peer_id = sample.peer_id;
+    msg.channel = sample.channel;
+    msg.status = static_cast<uint8_t>(sample.status);
+    msg.expected_target_cycle = sample.expected_target_cycle;
+    msg.received_target_cycle = sample.received_target_cycle;
+    if (sample.sample) {
+      msg.seq = sample.sample->seq;
+      msg.schema_id = sample.sample->schema_id;
+    }
+    msg.local_receive_time = timeFromNs(sample.t_local_receive_ns);
+    msg.receive_latency = fromNs(sample.receive_latency_ns);
+    msg.fresh_for_this_cycle = sample.fresh_for_this_cycle;
+    msg.late_for_this_cycle = sample.late_for_this_cycle;
+    msg.duplicate = sample.duplicate;
+    msg.wrong_cycle = sample.wrong_cycle;
+    msg.bad_schema = sample.bad_schema;
+    msg.bad_crc = sample.bad_crc;
+    msg.sender_clock_bad = sample.sender_clock_bad;
+    msg.drop_reason = sample.drop_reason;
+    return msg;
+  }
+
+  periodic_sync::SampleStats toSampleStatsMsg(const swarm_sync::CycleSnapshot& snapshot,
+                                              const ros::Time& stamp) const {
+    periodic_sync::SampleStats msg;
+    msg.header.stamp = stamp;
+    msg.team_id = config_.team_id;
+    msg.session_id = snapshot.session_id;
+    msg.task_id = snapshot.task_id;
+    msg.self_id = snapshot.self_id;
+    msg.cycle_id = snapshot.cycle_id;
+    msg.received_count = snapshot.stats.fresh_count + snapshot.stats.late_count;
+    msg.fresh_count = snapshot.stats.fresh_count;
+    msg.missing_count = snapshot.stats.missing_count;
+    msg.late_count = snapshot.stats.late_count;
+    msg.wrong_cycle_count = snapshot.stats.wrong_cycle_count;
+    for (const auto& sample : snapshot.samples) {
+      if (sample.duplicate) {
+        ++msg.duplicate_count;
+      }
+      if (sample.bad_schema) {
+        ++msg.bad_schema_count;
+      }
+      if (sample.bad_crc) {
+        ++msg.bad_payload_count;
+      }
+      if (sample.sender_clock_bad) {
+        ++msg.sender_clock_bad_count;
+      }
+    }
+    return msg;
+  }
+
+  void configureExpectedSamples() {
+    expected_samples_.clear();
+    swarm_sync::ChannelTiming timing;
+    timing.payload_type = "bytes";
+    timing.schema_id = expected_sample_channel_ + ".v1";
+    timing.receive_cutoff_ns = config_.period_ns > 0 ? config_.period_ns : 50000000;
+    timing.ttl_ns = timing.receive_cutoff_ns;
+    for (const auto& participant : config_.required_participants) {
+      swarm_sync::ExpectedSample expected;
+      expected.peer_id = participant;
+      expected.channel = expected_sample_channel_;
+      expected.required = true;
+      expected.timing = timing;
+      expected_samples_.push_back(std::move(expected));
+    }
   }
 
   void publishHealth() {
@@ -250,7 +401,12 @@ class SwarmRuntimeNode {
   swarm_sync::SessionConfig config_;
   swarm_sync::SessionManager session_;
   swarm_sync::CycleScheduler scheduler_;
+  swarm_sync::SnapshotBuilder snapshot_builder_;
+  swarm_sync::SampleBuffer sample_buffer_;
+  std::vector<swarm_sync::ExpectedSample> expected_samples_;
   ros::Publisher cycle_pub_;
+  ros::Publisher snapshot_pub_;
+  ros::Publisher sample_stats_pub_;
   ros::Publisher health_pub_;
   ros::ServiceServer start_srv_;
   ros::ServiceServer stop_srv_;
@@ -261,6 +417,7 @@ class SwarmRuntimeNode {
   double frequency_hz_ = 20.0;
   double poll_rate_hz_ = 200.0;
   double start_delay_s_ = 0.1;
+  std::string expected_sample_channel_ = "runtime_state";
   bool auto_start_ = true;
 };
 

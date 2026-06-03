@@ -137,5 +137,11 @@ After build metadata and source integration:
 - `catkin_make` or `catkin build` passes.
 - `roslaunch periodic_sync swarm_runtime.launch` starts.
 - `/swarm_sync/cycle` publishes.
+- `cycle_snapshot` publishes once per runtime cycle under the launch namespace.
+- `sample_stats` publishes per-cycle sample counts under the launch namespace.
+- Empty peer/sample input still publishes a CycleSnapshot with expected peer
+  entries marked missing, without blocking cycle advancement.
+- Runtime smoke tests receive both SyncedCycle and CycleSnapshot and verify
+  matching cycle ids.
 - `/swarm_sync/get_runtime_status` responds.
 - The configured allowlist controls all topic forwarding.
