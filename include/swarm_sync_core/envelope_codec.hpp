@@ -19,9 +19,18 @@ struct DecodeResult {
   SampleEnvelope envelope;
 };
 
+struct SampleEnvelopeValidationOptions {
+  size_t max_payload_bytes{kDefaultMaxPayloadBytes};
+  bool verify_payload_crc{true};
+};
+
+DecodeResult validateSampleEnvelope(
+    const SampleEnvelope& envelope,
+    const SampleEnvelopeValidationOptions& options = SampleEnvelopeValidationOptions());
+
 class EnvelopeCodec {
 public:
-  explicit EnvelopeCodec(uint32_t supported_envelope_version = 1);
+  explicit EnvelopeCodec(size_t max_payload_bytes = kDefaultMaxPayloadBytes);
 
   void allowSchema(std::string channel, std::string payload_type, std::string schema_id);
   void clearSchemaRules();
@@ -38,7 +47,7 @@ public:
 private:
   using SchemaKey = std::tuple<std::string, std::string, std::string>;
 
-  uint32_t supported_envelope_version_{1};
+  size_t max_payload_bytes_{kDefaultMaxPayloadBytes};
   std::set<SchemaKey> allowed_schemas_;
 };
 

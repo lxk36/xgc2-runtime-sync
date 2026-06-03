@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@ SampleEnvelope makeEnvelope(uint64_t cycle, uint64_t seq = 1) {
   envelope.session_id = "session-a";
   envelope.team_id = "team-a";
   envelope.task_id = "formation";
+  envelope.participant_id = "uav2";
   envelope.channel = "solution";
   envelope.sender_id = "uav2";
   envelope.node_id = "planner";
@@ -55,6 +57,14 @@ SessionConfig makeSessionConfig() {
   config.epoch_ns = 1000;
   config.period_ns = 100;
   return config;
+}
+
+void writeU32At(std::vector<uint8_t>* bytes, size_t offset, uint32_t value) {
+  ASSERT_LE(offset + 4, bytes->size());
+  for (int i = 0; i < 4; ++i) {
+    (*bytes)[offset + static_cast<size_t>(i)] =
+        static_cast<uint8_t>((value >> (i * 8)) & 0xffu);
+  }
 }
 
 }  // namespace
@@ -216,6 +226,7 @@ TEST(EnvelopeCodecTest, EncodesDecodesAndValidatesSchemaAndCrc) {
 
   ASSERT_TRUE(decoded.ok) << decoded.error;
   EXPECT_EQ(envelope.session_id, decoded.envelope.session_id);
+  EXPECT_EQ(envelope.participant_id, decoded.envelope.participant_id);
   EXPECT_EQ(envelope.channel, decoded.envelope.channel);
   EXPECT_EQ(envelope.payload, decoded.envelope.payload);
   EXPECT_EQ(EnvelopeCodec::crc32c(envelope.payload.data(), envelope.payload.size()),
@@ -232,6 +243,110 @@ TEST(EnvelopeCodecTest, EncodesDecodesAndValidatesSchemaAndCrc) {
   const auto bad_crc = codec.decode(corrupted);
   EXPECT_FALSE(bad_crc.ok);
   EXPECT_EQ(SampleStatus::BadPayload, bad_crc.status);
+}
+
+TEST(EnvelopeCodecTest, AllowsEmptyPayloadWithMetadataIntact) {
+  EnvelopeCodec codec;
+  auto envelope = makeEnvelope(6);
+  envelope.payload.clear();
+  envelope.payload_crc32c = EnvelopeCodec::crc32c(envelope.payload.data(), envelope.payload.size());
+
+  const auto decoded = codec.decode(codec.encode(envelope));
+
+  ASSERT_TRUE(decoded.ok) << decoded.error;
+  EXPECT_TRUE(decoded.envelope.payload.empty());
+  EXPECT_EQ("session-a", decoded.envelope.session_id);
+  EXPECT_EQ("formation", decoded.envelope.task_id);
+  EXPECT_EQ("uav2", decoded.envelope.participant_id);
+  EXPECT_EQ("solution", decoded.envelope.channel);
+  EXPECT_EQ("solution.v1", decoded.envelope.schema_id);
+}
+
+TEST(EnvelopeCodecTest, RejectsOversizedPayload) {
+  EnvelopeCodec codec;
+  auto envelope = makeEnvelope(6);
+  envelope.payload.assign(kDefaultMaxPayloadBytes + 1, 0x42);
+
+  const auto validation = validateSampleEnvelope(
+      envelope, SampleEnvelopeValidationOptions{kDefaultMaxPayloadBytes, false});
+  EXPECT_FALSE(validation.ok);
+  EXPECT_EQ(SampleStatus::BadPayload, validation.status);
+  EXPECT_NE(std::string::npos, validation.error.find("payload"));
+  EXPECT_THROW(codec.encode(envelope), std::invalid_argument);
+}
+
+TEST(EnvelopeCodecTest, RejectsBadSchemaVersion) {
+  EnvelopeCodec codec;
+  auto envelope = makeEnvelope(6);
+  envelope.schema_version = 2;
+
+  const auto validation = validateSampleEnvelope(
+      envelope, SampleEnvelopeValidationOptions{kDefaultMaxPayloadBytes, false});
+  EXPECT_FALSE(validation.ok);
+  EXPECT_NE(std::string::npos, validation.error.find("schema_version"));
+  EXPECT_THROW(codec.encode(envelope), std::invalid_argument);
+
+  auto bytes = codec.encode(makeEnvelope(6));
+  writeU32At(&bytes, 8, 2);
+  const auto decoded = codec.decode(bytes);
+  EXPECT_FALSE(decoded.ok);
+  EXPECT_NE(std::string::npos, decoded.error.find("schema_version"));
+}
+
+TEST(EnvelopeCodecTest, RejectsMissingRequiredFields) {
+  EnvelopeCodec codec;
+  auto envelope = makeEnvelope(6);
+  envelope.participant_id.clear();
+  envelope.payload_crc32c = EnvelopeCodec::crc32c(envelope.payload.data(), envelope.payload.size());
+
+  const auto validation = validateSampleEnvelope(envelope);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_NE(std::string::npos, validation.error.find("participant_id"));
+  EXPECT_THROW(codec.encode(envelope), std::invalid_argument);
+}
+
+TEST(EnvelopeCodecTest, RejectsIllegalKeyFieldCharacters) {
+  EnvelopeCodec codec;
+  auto envelope = makeEnvelope(6);
+  envelope.task_id = "/planner/local_solution";
+  envelope.payload_crc32c = EnvelopeCodec::crc32c(envelope.payload.data(), envelope.payload.size());
+
+  const auto validation = validateSampleEnvelope(envelope);
+  EXPECT_FALSE(validation.ok);
+  EXPECT_NE(std::string::npos, validation.error.find("task_id"));
+  EXPECT_THROW(codec.encode(envelope), std::invalid_argument);
+}
+
+TEST(EnvelopeCodecTest, DetectsMalformedEncodedData) {
+  EnvelopeCodec codec;
+  const auto bytes = codec.encode(makeEnvelope(6));
+
+  auto bad_magic = bytes;
+  bad_magic[0] ^= 0xffu;
+  EXPECT_FALSE(codec.decode(bad_magic).ok);
+  EXPECT_NE(std::string::npos, codec.decode(bad_magic).error.find("magic"));
+
+  auto bad_codec_version = bytes;
+  writeU32At(&bad_codec_version, 4, 2);
+  EXPECT_FALSE(codec.decode(bad_codec_version).ok);
+  EXPECT_NE(std::string::npos, codec.decode(bad_codec_version).error.find("codec"));
+
+  auto bad_field_length = bytes;
+  writeU32At(&bad_field_length, 12, kMaxEnvelopeFieldBytes + 1);
+  const auto bad_length_result = codec.decode(bad_field_length);
+  EXPECT_FALSE(bad_length_result.ok);
+  EXPECT_NE(std::string::npos, bad_length_result.error.find("session_id"));
+
+  EnvelopeCodec small_payload_codec(2);
+  const auto oversized_decode_result = small_payload_codec.decode(bytes);
+  EXPECT_FALSE(oversized_decode_result.ok);
+  EXPECT_NE(std::string::npos, oversized_decode_result.error.find("payload"));
+
+  auto truncated = bytes;
+  truncated.pop_back();
+  const auto truncated_result = codec.decode(truncated);
+  EXPECT_FALSE(truncated_result.ok);
+  EXPECT_NE(std::string::npos, truncated_result.error.find("payload"));
 }
 
 TEST(TransportKeyTest, BuildsTaskSemanticKeyAndRejectsBadFields) {

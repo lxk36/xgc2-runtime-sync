@@ -2,6 +2,9 @@
 
 #include <cstring>
 #include <limits>
+#include <stdexcept>
+
+#include "swarm_sync_core/transport_keys.hpp"
 
 namespace swarm_sync {
 namespace {
@@ -76,17 +79,42 @@ public:
     return true;
   }
 
-  bool readString(std::string* value) {
+  bool readString(const char* field_name, std::string* value, std::string* error) {
     uint32_t size = 0;
-    if (!readU32(&size) || !has(size)) return false;
+    if (!readU32(&size)) {
+      if (error) *error = std::string("truncated field length for ") + field_name;
+      return false;
+    }
+    if (size > kMaxEnvelopeFieldBytes) {
+      if (error) *error = std::string("field length exceeds limit for ") + field_name;
+      return false;
+    }
+    if (!has(size)) {
+      if (error) *error = std::string("bad field length for ") + field_name;
+      return false;
+    }
     value->assign(reinterpret_cast<const char*>(bytes_.data() + offset_), size);
     offset_ += size;
     return true;
   }
 
-  bool readBytes(std::vector<uint8_t>* value) {
+  bool readBytes(const char* field_name,
+                 size_t max_size,
+                 std::vector<uint8_t>* value,
+                 std::string* error) {
     uint32_t size = 0;
-    if (!readU32(&size) || !has(size)) return false;
+    if (!readU32(&size)) {
+      if (error) *error = std::string("truncated field length for ") + field_name;
+      return false;
+    }
+    if (size > max_size) {
+      if (error) *error = std::string(field_name) + " exceeds maximum size";
+      return false;
+    }
+    if (!has(size)) {
+      if (error) *error = std::string("bad field length for ") + field_name;
+      return false;
+    }
     value->assign(bytes_.begin() + static_cast<std::ptrdiff_t>(offset_),
                   bytes_.begin() + static_cast<std::ptrdiff_t>(offset_ + size));
     offset_ += size;
@@ -113,10 +141,33 @@ DecodeResult errorResult(SampleStatus status, std::string error, SampleEnvelope 
   return result;
 }
 
+bool isKnownProducerStatus(ProducerStatus status) {
+  return status == ProducerStatus::Success ||
+         status == ProducerStatus::Timeout ||
+         status == ProducerStatus::Failed ||
+         status == ProducerStatus::Skipped ||
+         status == ProducerStatus::UserFallback ||
+         status == ProducerStatus::Unknown;
+}
+
+bool validateRequiredKeyField(const std::string& name,
+                              const std::string& value,
+                              std::string* reason) {
+  if (value.empty()) {
+    if (reason) *reason = name + " is required";
+    return false;
+  }
+  if (!isValidTaskKeyField(value)) {
+    if (reason) *reason = name + " contains an illegal character";
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
-EnvelopeCodec::EnvelopeCodec(uint32_t supported_envelope_version)
-    : supported_envelope_version_(supported_envelope_version) {}
+EnvelopeCodec::EnvelopeCodec(size_t max_payload_bytes)
+    : max_payload_bytes_(max_payload_bytes) {}
 
 void EnvelopeCodec::allowSchema(std::string channel,
                                 std::string payload_type,
@@ -132,16 +183,29 @@ void EnvelopeCodec::clearSchemaRules() {
 
 std::vector<uint8_t> EnvelopeCodec::encode(const SampleEnvelope& envelope) const {
   SampleEnvelope encoded = envelope;
+  if (encoded.sender_id.empty()) {
+    encoded.sender_id = encoded.participant_id;
+  }
+  const SampleEnvelopeValidationOptions options{max_payload_bytes_, false};
+  const auto validation = validateSampleEnvelope(encoded, options);
+  if (!validation.ok) {
+    throw std::invalid_argument(validation.error);
+  }
+  if (!isSchemaAccepted(encoded)) {
+    throw std::invalid_argument("schema_id is not accepted for channel");
+  }
+
   encoded.payload_crc32c = crc32c(encoded.payload.data(), encoded.payload.size());
 
   std::vector<uint8_t> out;
   out.reserve(192 + encoded.payload.size());
   writeU32(&out, kMagic);
   writeU32(&out, kFormatVersion);
-  writeU32(&out, encoded.envelope_version);
+  writeU32(&out, encoded.schema_version);
   writeString(&out, encoded.session_id);
   writeString(&out, encoded.team_id);
   writeString(&out, encoded.task_id);
+  writeString(&out, encoded.participant_id);
   writeString(&out, encoded.channel);
   writeString(&out, encoded.sender_id);
   writeString(&out, encoded.node_id);
@@ -173,6 +237,7 @@ DecodeResult EnvelopeCodec::decode(const std::vector<uint8_t>& bytes) const {
   SampleEnvelope envelope;
   uint8_t producer_status = 0;
   uint8_t clock_ok = 0;
+  std::string malformed_reason;
 
   if (!reader.readU32(&magic) || magic != kMagic) {
     return errorResult(SampleStatus::TransportError, "bad envelope magic");
@@ -180,13 +245,14 @@ DecodeResult EnvelopeCodec::decode(const std::vector<uint8_t>& bytes) const {
   if (!reader.readU32(&format_version) || format_version != kFormatVersion) {
     return errorResult(SampleStatus::TransportError, "unsupported codec format");
   }
-  if (!reader.readU32(&envelope.envelope_version) ||
-      !reader.readString(&envelope.session_id) ||
-      !reader.readString(&envelope.team_id) ||
-      !reader.readString(&envelope.task_id) ||
-      !reader.readString(&envelope.channel) ||
-      !reader.readString(&envelope.sender_id) ||
-      !reader.readString(&envelope.node_id) ||
+  if (!reader.readU32(&envelope.schema_version) ||
+      !reader.readString("session_id", &envelope.session_id, &malformed_reason) ||
+      !reader.readString("team_id", &envelope.team_id, &malformed_reason) ||
+      !reader.readString("task_id", &envelope.task_id, &malformed_reason) ||
+      !reader.readString("participant_id", &envelope.participant_id, &malformed_reason) ||
+      !reader.readString("channel", &envelope.channel, &malformed_reason) ||
+      !reader.readString("sender_id", &envelope.sender_id, &malformed_reason) ||
+      !reader.readString("node_id", &envelope.node_id, &malformed_reason) ||
       !reader.readU64(&envelope.seq) ||
       !reader.readU64(&envelope.produce_cycle) ||
       !reader.readU64(&envelope.target_cycle) ||
@@ -201,35 +267,36 @@ DecodeResult EnvelopeCodec::decode(const std::vector<uint8_t>& bytes) const {
       !reader.readU8(&clock_ok) ||
       !reader.readI64(&envelope.clock_offset_ns) ||
       !reader.readU64(&envelope.clock_uncertainty_ns) ||
-      !reader.readString(&envelope.payload_type) ||
-      !reader.readString(&envelope.schema_id) ||
+      !reader.readString("payload_type", &envelope.payload_type, &malformed_reason) ||
+      !reader.readString("schema_id", &envelope.schema_id, &malformed_reason) ||
       !reader.readU32(&envelope.payload_crc32c) ||
-      !reader.readBytes(&envelope.payload) ||
-      !reader.done()) {
-    return errorResult(SampleStatus::TransportError, "truncated or malformed envelope", envelope);
+      !reader.readBytes("payload", max_payload_bytes_, &envelope.payload, &malformed_reason)) {
+    return errorResult(SampleStatus::TransportError,
+                       malformed_reason.empty() ? "truncated or malformed envelope"
+                                                : malformed_reason,
+                       envelope);
+  }
+  if (!reader.done()) {
+    return errorResult(SampleStatus::TransportError, "trailing data after envelope", envelope);
   }
 
   envelope.producer_status = static_cast<ProducerStatus>(producer_status);
   envelope.clock_ok = clock_ok != 0;
+  if (envelope.sender_id.empty()) {
+    envelope.sender_id = envelope.participant_id;
+  }
   return validate(envelope);
 }
 
 DecodeResult EnvelopeCodec::validate(const SampleEnvelope& envelope) const {
-  if (envelope.envelope_version != supported_envelope_version_) {
-    return errorResult(SampleStatus::TransportError, "unsupported envelope_version", envelope);
-  }
+  const SampleEnvelopeValidationOptions options{max_payload_bytes_, true};
+  const auto validation = validateSampleEnvelope(envelope, options);
+  if (!validation.ok) return validation;
+
   if (!isSchemaAccepted(envelope)) {
     return errorResult(SampleStatus::BadSchema, "schema_id is not accepted for channel", envelope);
   }
-  if (!verifyPayloadCrc(envelope)) {
-    return errorResult(SampleStatus::BadPayload, "payload crc mismatch", envelope);
-  }
-
-  DecodeResult result;
-  result.ok = true;
-  result.status = SampleStatus::Fresh;
-  result.envelope = envelope;
-  return result;
+  return validation;
 }
 
 bool EnvelopeCodec::isSchemaAccepted(const SampleEnvelope& envelope) const {
@@ -255,6 +322,40 @@ uint32_t EnvelopeCodec::crc32c(const uint8_t* data, size_t size) {
 
 bool EnvelopeCodec::verifyPayloadCrc(const SampleEnvelope& envelope) {
   return crc32c(envelope.payload.data(), envelope.payload.size()) == envelope.payload_crc32c;
+}
+
+DecodeResult validateSampleEnvelope(const SampleEnvelope& envelope,
+                                    const SampleEnvelopeValidationOptions& options) {
+  if (envelope.schema_version != kCurrentEnvelopeSchemaVersion) {
+    return errorResult(SampleStatus::TransportError,
+                       "unsupported schema_version: only 1 is supported",
+                       envelope);
+  }
+  if (envelope.payload.size() > options.max_payload_bytes) {
+    return errorResult(SampleStatus::BadPayload, "payload exceeds maximum size", envelope);
+  }
+
+  std::string reason;
+  if (!validateRequiredKeyField("session_id", envelope.session_id, &reason) ||
+      !validateRequiredKeyField("task_id", envelope.task_id, &reason) ||
+      !validateRequiredKeyField("participant_id", envelope.participant_id, &reason) ||
+      !validateRequiredKeyField("channel", envelope.channel, &reason) ||
+      !validateRequiredKeyField("schema_id", envelope.schema_id, &reason)) {
+    return errorResult(SampleStatus::TransportError, reason, envelope);
+  }
+
+  if (!isKnownProducerStatus(envelope.producer_status)) {
+    return errorResult(SampleStatus::TransportError, "producer_status is invalid", envelope);
+  }
+  if (options.verify_payload_crc && !EnvelopeCodec::verifyPayloadCrc(envelope)) {
+    return errorResult(SampleStatus::BadPayload, "payload crc mismatch", envelope);
+  }
+
+  DecodeResult result;
+  result.ok = true;
+  result.status = SampleStatus::Fresh;
+  result.envelope = envelope;
+  return result;
 }
 
 }  // namespace swarm_sync

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -8,12 +9,17 @@
 
 namespace swarm_sync {
 
+constexpr uint32_t kCurrentEnvelopeSchemaVersion = 1;
+constexpr size_t kDefaultMaxPayloadBytes = 1024 * 1024;
+constexpr size_t kMaxEnvelopeFieldBytes = 4096;
+
 struct SampleEnvelope {
-  uint32_t envelope_version{1};
+  uint32_t schema_version{kCurrentEnvelopeSchemaVersion};
 
   std::string session_id;
   std::string team_id;
   std::string task_id;
+  std::string participant_id;
   std::string channel;
 
   std::string sender_id;

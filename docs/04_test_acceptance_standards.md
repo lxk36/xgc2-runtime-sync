@@ -40,10 +40,13 @@ Cycle scheduler:
 Envelope codec:
 
 - Normal payload round trips.
+- Empty payload round trips while metadata fields remain explicit.
 - Bad checksum reports BadPayload.
 - Wrong schema id reports BadSchema.
-- Unsupported envelope version is rejected.
-- Empty payload follows channel policy.
+- Unsupported envelope schema_version is rejected; current supported value is 1.
+- session_id, task_id, participant_id, channel, and schema_id are required and follow the task-key field rules.
+- Payload larger than the configured limit is rejected; the default limit is 1 MiB.
+- Bad magic, unsupported codec format version, truncated bytes, invalid field lengths, and oversized payload lengths are rejected before sample use.
 
 Transport and task-semantic keys:
 
