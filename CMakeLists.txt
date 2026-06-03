@@ -9,8 +9,12 @@ find_package(catkin REQUIRED COMPONENTS
 
 add_message_files(
   FILES
+  BudgetReport.msg
+  ChannelStats.msg
   CycleSnapshot.msg
+  PeerLinkHealth.msg
   PeerSampleStatus.msg
+  Recommendation.msg
   RuntimeHealth.msg
   SampleStats.msg
   SyncReady.msg
@@ -20,6 +24,7 @@ add_message_files(
   SyncStatistics.msg
   SyncEvent.msg
   SyncedCycle.msg
+  WeakNetState.msg
 )
 
 add_service_files(
@@ -54,6 +59,14 @@ add_library(swarm_sync_core
   src/core/snapshot_builder.cpp
   src/core/transport.cpp
   src/core/transport_keys.cpp
+  src/core/weaknet/budget_guard.cpp
+  src/core/weaknet/channel_profile.cpp
+  src/core/weaknet/cycle_window.cpp
+  src/core/weaknet/link_health.cpp
+  src/core/weaknet/payload_guard.cpp
+  src/core/weaknet/recommendation_engine.cpp
+  src/core/weaknet/send_stagger.cpp
+  src/core/weaknet/state_machine.cpp
 )
 target_compile_features(swarm_sync_core PUBLIC cxx_std_17)
 
@@ -115,7 +128,7 @@ install(DIRECTORY include/
   DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}
 )
 
-install(DIRECTORY config docs launch scripts tools
+install(DIRECTORY config docs launch scripts specs tests tools
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   USE_SOURCE_PERMISSIONS
 )
