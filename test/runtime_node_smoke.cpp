@@ -2,17 +2,27 @@
 
 #include <ros/ros.h>
 
+#include "periodic_sync/BudgetReport.h"
 #include "periodic_sync/CycleSnapshot.h"
 #include "periodic_sync/GetRuntimeStatus.h"
+#include "periodic_sync/PeerLinkHealth.h"
 #include "periodic_sync/PeerSampleStatus.h"
+#include "periodic_sync/Recommendation.h"
 #include "periodic_sync/SyncedCycle.h"
+#include "periodic_sync/WeakNetState.h"
 
 namespace {
 
 periodic_sync::SyncedCycle last_cycle;
 periodic_sync::CycleSnapshot last_snapshot;
+periodic_sync::BudgetReport last_budget;
+periodic_sync::PeerLinkHealth last_link_health;
+periodic_sync::Recommendation last_recommendation;
 bool received_cycle = false;
 bool received_snapshot = false;
+bool received_budget = false;
+bool received_link_health = false;
+bool received_recommendation = false;
 
 void cycleCallback(const periodic_sync::SyncedCycle::ConstPtr& msg) {
   last_cycle = *msg;
@@ -24,17 +34,36 @@ void snapshotCallback(const periodic_sync::CycleSnapshot::ConstPtr& msg) {
   received_snapshot = true;
 }
 
+void budgetCallback(const periodic_sync::BudgetReport::ConstPtr& msg) {
+  last_budget = *msg;
+  received_budget = true;
+}
+
+void linkHealthCallback(const periodic_sync::PeerLinkHealth::ConstPtr& msg) {
+  last_link_health = *msg;
+  received_link_health = true;
+}
+
+void recommendationCallback(const periodic_sync::Recommendation::ConstPtr& msg) {
+  last_recommendation = *msg;
+  received_recommendation = true;
+}
+
 }  // namespace
 
 TEST(RuntimeNodeSmokeTest, PublishesCycleAndServesStatus) {
   ros::NodeHandle nh;
   const auto cycle_sub = nh.subscribe("/swarm_sync/cycle", 4, cycleCallback);
   const auto snapshot_sub = nh.subscribe("/cycle_snapshot", 4, snapshotCallback);
+  const auto budget_sub = nh.subscribe("/budget_report", 4, budgetCallback);
+  const auto link_health_sub = nh.subscribe("/peer_link_health", 4, linkHealthCallback);
+  const auto recommendation_sub = nh.subscribe("/recommendation", 4, recommendationCallback);
 
   const ros::Time deadline = ros::Time::now() + ros::Duration(5.0);
   ros::Rate rate(100.0);
   while (ros::ok() &&
-         !(received_cycle && received_snapshot && last_cycle.cycle_id == last_snapshot.cycle_id) &&
+         !(received_cycle && received_snapshot && received_budget && received_link_health &&
+           last_cycle.cycle_id == last_snapshot.cycle_id) &&
          ros::Time::now() < deadline) {
     ros::spinOnce();
     rate.sleep();
@@ -42,6 +71,8 @@ TEST(RuntimeNodeSmokeTest, PublishesCycleAndServesStatus) {
 
   ASSERT_TRUE(received_cycle);
   ASSERT_TRUE(received_snapshot);
+  ASSERT_TRUE(received_budget);
+  ASSERT_TRUE(received_link_health);
   EXPECT_EQ(last_cycle.cycle_id, last_snapshot.cycle_id);
   EXPECT_EQ("test_team", last_cycle.team_id);
   EXPECT_EQ("smoke_session", last_cycle.session_id);
@@ -64,6 +95,17 @@ TEST(RuntimeNodeSmokeTest, PublishesCycleAndServesStatus) {
   EXPECT_FALSE(last_snapshot.all_required_fresh);
   EXPECT_FALSE(last_snapshot.all_required_usable);
 
+  EXPECT_TRUE(last_budget.accepted);
+  EXPECT_GT(last_budget.max_realtime_bps, 0.0);
+  EXPECT_EQ("uav_test", last_link_health.peer_id);
+  EXPECT_EQ("runtime_state", last_link_health.channel);
+  EXPECT_EQ(0.0, last_link_health.fresh_ratio);
+  EXPECT_GT(last_link_health.missing_ratio, 0.0);
+  EXPECT_NE(periodic_sync::PeerSampleStatus::STATUS_FRESH, last_snapshot.samples.front().status);
+  EXPECT_TRUE(received_recommendation);
+  EXPECT_FALSE(last_recommendation.type.empty());
+  EXPECT_FALSE(last_recommendation.reason.empty());
+
   ros::ServiceClient client =
       nh.serviceClient<periodic_sync::GetRuntimeStatus>("/swarm_sync/get_runtime_status");
   ASSERT_TRUE(client.waitForExistence(ros::Duration(3.0)));
@@ -76,6 +118,7 @@ TEST(RuntimeNodeSmokeTest, PublishesCycleAndServesStatus) {
   EXPECT_TRUE(request.response.clock_ok);
   EXPECT_GE(request.response.current_cycle, last_cycle.cycle_id);
   EXPECT_NE(std::string::npos, request.response.reason.find("adapters=1/1"));
+  EXPECT_NE(std::string::npos, request.response.reason.find("weaknet_state="));
 }
 
 int main(int argc, char** argv) {
