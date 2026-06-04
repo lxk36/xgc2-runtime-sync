@@ -77,6 +77,14 @@ F7 Clock health:
 - Read chrony or PTP health.
 - Reject start or mark degraded when clock quality is insufficient.
 - Mark outgoing and incoming samples when sender clock quality is bad.
+- Treat the ground station as the default LAN time authority.
+- Gate preflight session start on selected source, offset, uncertainty, and
+  leap status.
+- Disallow in-flight system-time step in Runtime Sync; only observe and mark
+  degraded when clock health worsens.
+- Keep local control-period `dt` on monotonic or steady clocks; use
+  synchronized ROS/system time only for cross-machine stamps and future
+  execution timestamps.
 
 F8 Observability:
 
@@ -99,3 +107,5 @@ F8 Observability:
 - Flight-control command execution.
 - Safety fallback policy.
 - Full ROS1 multi-machine networking.
+- Executing `chronyc makestep`, `ntpdate`, or any other system-time correction
+  command from this package.

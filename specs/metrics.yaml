@@ -27,6 +27,10 @@ peer_channel_metrics:
 node_metrics:
   - local_cycle_jitter_p99_ns
   - publish_deadline_miss_ratio
+  - local_clock_offset_ns
   - local_clock_uncertainty_ns
+  - local_clock_quality
+  - local_clock_source
+  - local_clock_phase
   - weaknet_state
   - recommendation_count

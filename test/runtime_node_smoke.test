@@ -11,6 +11,14 @@
     <param name="poll_rate_hz" value="100.0"/>
     <param name="start_delay_s" value="0.05"/>
     <param name="auto_start" value="true"/>
+    <param name="clock_provider" value="mock"/>
+    <param name="clock_phase" value="preflight"/>
+    <param name="ground_time_source" value="mock_ground_station"/>
+    <param name="max_clock_offset_ms" value="2.0"/>
+    <param name="mock_clock_ok" value="true"/>
+    <param name="mock_clock_offset_ns" value="1000000"/>
+    <param name="mock_clock_uncertainty_ns" value="500000"/>
+    <param name="mock_clock_source" value="mock_ground_station"/>
     <rosparam param="ros1_adapters">
 deny_by_default: true
 rules:

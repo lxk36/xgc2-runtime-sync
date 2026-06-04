@@ -75,7 +75,18 @@ F3. 每次迁移有 reason 和 evidence。
 F4. 状态机只给通信建议，不触发算法 fallback。
 ```
 
-### G. Netem 弱网矩阵
+### G. 时钟 gate 与飞行阶段
+
+```text
+G1. 起飞前所有节点必须选中地面站 chrony source。
+G2. 默认 offset <= 2 ms 且 uncertainty <= 2 ms 才允许 start。
+G3. leap status 非 Normal 时拒绝 start。
+G4. in_flight phase 不执行 step，只发布 degraded/bad 诊断。
+G5. 同步事件使用未来 T_exec，不在事件前临时重新校时。
+G6. 控制周期 dt 使用 monotonic/steady clock，跨机时间戳使用同步 system/ROS time。
+```
+
+### H. Netem 弱网矩阵
 
 最低矩阵：
 

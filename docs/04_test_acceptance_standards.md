@@ -137,6 +137,13 @@ old samples do not block new cycles.
 - Unsynchronized chrony rejects start when required.
 - Bad sender clock marks outgoing and incoming samples.
 - High clock uncertainty produces degraded or bad health.
+- Selected chrony source must match the configured ground station unless the
+  deployment explicitly disables that gate.
+- Default preflight start gate rejects offset or uncertainty above 2 ms.
+- In-flight phase publishes degraded or bad clock health without calling
+  `chronyc makestep`, `ntpdate`, or any other step command.
+- `check_chrony.sh` is tested with fake `chronyc` output for PASS and FAIL
+  paths.
 
 ## Performance Tests
 
@@ -159,4 +166,6 @@ After build metadata and source integration:
 - Runtime smoke tests receive both SyncedCycle and CycleSnapshot and verify
   matching cycle ids.
 - `/swarm_sync/get_runtime_status` responds.
+- `/swarm_sync/get_runtime_status` reports clock offset, uncertainty, quality,
+  source, and phase.
 - The configured allowlist controls all topic forwarding.

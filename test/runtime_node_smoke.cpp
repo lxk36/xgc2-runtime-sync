@@ -116,9 +116,15 @@ TEST(RuntimeNodeSmokeTest, PublishesCycleAndServesStatus) {
   EXPECT_TRUE(request.response.running);
   EXPECT_EQ("RUNNING", request.response.state);
   EXPECT_TRUE(request.response.clock_ok);
+  EXPECT_EQ(1000000, request.response.clock_offset_ns);
+  EXPECT_EQ(500000u, request.response.clock_uncertainty_ns);
+  EXPECT_EQ(0u, request.response.clock_quality);
+  EXPECT_EQ("mock_ground_station", request.response.clock_source);
+  EXPECT_EQ("preflight", request.response.clock_phase);
   EXPECT_GE(request.response.current_cycle, last_cycle.cycle_id);
   EXPECT_NE(std::string::npos, request.response.reason.find("adapters=1/1"));
   EXPECT_NE(std::string::npos, request.response.reason.find("weaknet_state="));
+  EXPECT_NE(std::string::npos, request.response.reason.find("clock_source=mock_ground_station"));
 }
 
 int main(int argc, char** argv) {

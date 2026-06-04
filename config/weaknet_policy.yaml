@@ -8,8 +8,15 @@ session:
 
 time:
   provider: chrony
+  authority: ground_station
+  ground_time_source: 192.168.1.10
+  phase_source: external
   require_clock_ok_to_start: true
-  max_clock_uncertainty_ms: 1.0
+  max_clock_uncertainty_ms: 2.0
+  preflight_max_offset_ms: 2.0
+  preflight_max_uncertainty_ms: 2.0
+  in_flight_allow_step: false
+  external_sources_allowed_in_flight: false
 
 zenoh:
   mode: client

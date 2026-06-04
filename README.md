@@ -35,3 +35,41 @@ Useful weak-network topics:
 /recommendation
 /weaknet_state
 ```
+
+## Clock Safety
+
+Runtime Sync assumes the ground station is the LAN time authority. Vehicles
+should synchronize only to that source during flight; external NTP/GPS sources
+belong upstream of the ground station unless a deployment explicitly proves
+otherwise.
+
+Default gate:
+
+```text
+preflight offset <= 2 ms
+preflight uncertainty <= 2 ms
+selected chrony source == ground station
+leap status == Normal
+```
+
+Preflight may use system-level chrony configuration such as `makestep` to
+correct a large boot-time error before core ROS nodes or sessions start.
+Runtime Sync itself never runs `chronyc makestep`.
+
+In flight, system time step is treated as disallowed. Keep chrony slewing and
+monitor `/swarm_sync/runtime_health` plus `/swarm_sync/get_runtime_status`;
+when offset or uncertainty leaves the gate, mark the runtime degraded rather
+than forcing a resync.
+
+For synchronized actions, send a future execution timestamp and let each
+vehicle execute when its synchronized local system time reaches that timestamp.
+Do not trigger an NTP resync immediately before the action. Local control-loop
+`dt` should use a monotonic/steady clock; cross-machine timestamps should use
+the synchronized ROS/system time.
+
+Preflight check:
+
+```bash
+GROUND_TIME_SOURCE=192.168.10.10 MAX_OFFSET_MS=2.0 MAX_UNCERTAINTY_MS=2.0 \
+  rosrun periodic_sync check_chrony.sh
+```

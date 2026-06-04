@@ -13,6 +13,7 @@ panels:
   - state_transition_reasons
 
 required_exports:
+  - clock_health_by_node.csv
   - metrics.csv
   - link_health_by_peer_channel.csv
   - state_transitions.csv

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <sstream>
 #include <string>
@@ -20,6 +21,7 @@
 #include "periodic_sync/StopSession.h"
 #include "periodic_sync/SyncedCycle.h"
 #include "periodic_sync/WeakNetState.h"
+#include "swarm_sync_core/clock_monitor.hpp"
 #include "swarm_sync_core/sample_buffer.hpp"
 #include "swarm_sync_core/snapshot_builder.hpp"
 #include "swarm_sync_core/cycle_scheduler.hpp"
@@ -122,6 +124,7 @@ class SwarmRuntimeNode {
     pnh.param<int>("weaknet_payload_bytes_p95", weaknet_payload_bytes_p95_, 600);
     pnh.param<double>("weaknet_receive_cutoff_ratio", weaknet_receive_cutoff_ratio_, 0.80);
     pnh.param<double>("weaknet_late_record_window_ratio", weaknet_late_record_window_ratio_, 1.0);
+    loadClockPolicy(pnh);
 
     if (!loadAdapterConfig(pnh)) {
       return false;
@@ -154,15 +157,6 @@ class SwarmRuntimeNode {
       return false;
     }
 
-    swarm_sync::ClockState clock;
-    clock.clock_ok = true;
-    clock.quality = swarm_sync::ClockQuality::OK;
-    clock.source = "ros_time";
-    if (auto_start_ && !startSession(config_.epoch_ns, config_.period_ns, clock)) {
-      ROS_ERROR_STREAM("failed to auto-start swarm runtime session: " << session_.reason());
-      return false;
-    }
-
     cycle_pub_ = nh_.advertise<periodic_sync::SyncedCycle>("/swarm_sync/cycle", 10, false);
     snapshot_pub_ = nh_.advertise<periodic_sync::CycleSnapshot>("cycle_snapshot", 10, false);
     sample_stats_pub_ = nh_.advertise<periodic_sync::SampleStats>("sample_stats", 10, false);
@@ -184,8 +178,17 @@ class SwarmRuntimeNode {
                     << " self=" << config_.self_id
                     << " frequency_hz=" << frequency_hz_
                     << " " << adapter_summary_
-                    << " weaknet=" << weaknet_summary_);
+                    << " weaknet=" << weaknet_summary_
+                    << " clock_provider=" << clock_policy_.provider
+                    << " clock_phase=" << swarm_sync::ClockMonitor::phaseToString(clock_phase_));
+    if (auto_start_) {
+      last_clock_result_ = sampleClock();
+      if (!startSession(config_.epoch_ns, config_.period_ns, last_clock_result_.state)) {
+        ROS_ERROR_STREAM("auto-start blocked by clock gate: " << session_.reason());
+      }
+    }
     publishBudget();
+    publishHealth();
     return true;
   }
 
@@ -193,6 +196,10 @@ class SwarmRuntimeNode {
   bool startSession(int64_t epoch_ns, int64_t period_ns, const swarm_sync::ClockState& clock) {
     if (!swarm_sync::CycleScheduler::isValidPeriodNs(period_ns)) {
       session_.markError("period_ns outside supported 0.5-50 Hz range");
+      return false;
+    }
+    if (!clock.clock_ok || clock.quality == swarm_sync::ClockQuality::BAD) {
+      session_.markError("clock gate rejected: " + last_clock_result_.reason);
       return false;
     }
     config_.epoch_ns = epoch_ns;
@@ -242,11 +249,8 @@ class SwarmRuntimeNode {
     next_config.epoch_ns = toNs(request.epoch_time);
     config_ = next_config;
 
-    swarm_sync::ClockState clock;
-    clock.clock_ok = true;
-    clock.quality = swarm_sync::ClockQuality::OK;
-    clock.source = "ros_time";
-    response.accepted = startSession(config_.epoch_ns, config_.period_ns, clock);
+    last_clock_result_ = sampleClock();
+    response.accepted = startSession(config_.epoch_ns, config_.period_ns, last_clock_result_.state);
     response.reason = response.accepted ? "accepted" : session_.reason();
     return true;
   }
@@ -266,7 +270,13 @@ class SwarmRuntimeNode {
     response.running = session_.running();
     response.state = stateName(session_.state());
     response.current_cycle = current_cycle_;
-    response.clock_ok = true;
+    last_clock_result_ = sampleClock();
+    response.clock_ok = last_clock_result_.state.clock_ok;
+    response.clock_offset_ns = last_clock_result_.state.offset_ns;
+    response.clock_uncertainty_ns = last_clock_result_.state.uncertainty_ns;
+    response.clock_quality = toMsgClockQuality(last_clock_result_.state.quality);
+    response.clock_source = last_clock_result_.state.source;
+    response.clock_phase = swarm_sync::ClockMonitor::phaseToString(clock_phase_);
     response.zenoh_connected = false;
     response.reason = runtimeReason();
     return true;
@@ -274,10 +284,8 @@ class SwarmRuntimeNode {
 
   void timerCallback(const ros::TimerEvent&) {
     const ros::Time now = ros::Time::now();
-    swarm_sync::ClockState clock;
-    clock.clock_ok = true;
-    clock.quality = swarm_sync::ClockQuality::OK;
-    clock.source = "ros_time";
+    last_clock_result_ = sampleClock();
+    const auto& clock = last_clock_result_.state;
 
     session_.startIfDue(toNs(now), clock);
     const auto event = scheduler_.tick(toNs(now), clock.clock_ok);
@@ -286,7 +294,7 @@ class SwarmRuntimeNode {
       last_jitter_ns_ = event->jitter_ns;
       publishCycle(*event, now);
       publishSnapshot(*event, now, clock);
-      publishHealth();
+      publishHealth(false);
     }
   }
 
@@ -303,9 +311,9 @@ class SwarmRuntimeNode {
     msg.period = fromNs(event.period_ns);
     msg.jitter = fromNs(event.jitter_ns);
     msg.clock_ok = event.clock_ok;
-    msg.clock_quality = toMsgClockQuality(swarm_sync::ClockQuality::OK);
+    msg.clock_quality = toMsgClockQuality(last_clock_result_.state.quality);
     msg.session_running = session_.running();
-    msg.runtime_degraded = false;
+    msg.runtime_degraded = !last_clock_result_.state.clock_ok;
     cycle_pub_.publish(msg);
   }
 
@@ -436,7 +444,7 @@ class SwarmRuntimeNode {
     }
   }
 
-  void publishHealth() {
+  void publishHealth(bool refresh_clock = true) {
     periodic_sync::RuntimeHealth msg;
     msg.header.stamp = ros::Time::now();
     msg.team_id = config_.team_id;
@@ -445,10 +453,13 @@ class SwarmRuntimeNode {
     msg.alive = true;
     msg.session_running = session_.running();
     msg.zenoh_connected = false;
-    msg.clock_ok = true;
-    msg.clock_offset_ns = 0;
-    msg.clock_uncertainty_ns = 0;
-    msg.clock_quality = toMsgClockQuality(swarm_sync::ClockQuality::OK);
+    if (refresh_clock) {
+      last_clock_result_ = sampleClock();
+    }
+    msg.clock_ok = last_clock_result_.state.clock_ok;
+    msg.clock_offset_ns = last_clock_result_.state.offset_ns;
+    msg.clock_uncertainty_ns = last_clock_result_.state.uncertainty_ns;
+    msg.clock_quality = toMsgClockQuality(last_clock_result_.state.quality);
     msg.current_cycle = current_cycle_;
     msg.cycle_jitter_p95 = fromNs(last_jitter_ns_);
     msg.cycle_jitter_p99 = fromNs(last_jitter_ns_);
@@ -629,13 +640,68 @@ class SwarmRuntimeNode {
   }
 
   std::string runtimeReason() const {
+    const std::string clock_summary =
+        "clock_source=" + last_clock_result_.state.source +
+        " clock_phase=" + swarm_sync::ClockMonitor::phaseToString(clock_phase_) +
+        " clock_reason=" + last_clock_result_.reason;
     if (session_.reason().empty()) {
       return adapter_summary_ + "; " + weaknet_summary_ + "; weaknet_state=" +
-             swarm_sync::weaknet::toString(weaknet_state_) + " reason=" + weaknet_reason_;
+             swarm_sync::weaknet::toString(weaknet_state_) + " reason=" + weaknet_reason_ +
+             "; " + clock_summary;
     }
     return session_.reason() + "; " + adapter_summary_ + "; " + weaknet_summary_ +
            "; weaknet_state=" + swarm_sync::weaknet::toString(weaknet_state_) +
-           " reason=" + weaknet_reason_;
+           " reason=" + weaknet_reason_ + "; " + clock_summary;
+  }
+
+  void loadClockPolicy(const ros::NodeHandle& pnh) {
+    pnh.param<std::string>("clock_provider", clock_policy_.provider, "chrony");
+    pnh.param<std::string>("clock_authority", clock_policy_.authority, "ground_station");
+    pnh.param<std::string>("ground_time_source", clock_policy_.ground_time_source, "");
+    pnh.param<bool>("require_clock_ok_to_start", clock_policy_.require_clock_ok_to_start, true);
+    pnh.param<bool>("in_flight_allow_step", clock_policy_.in_flight_allow_step, false);
+    pnh.param<bool>("external_sources_allowed_in_flight",
+                    clock_policy_.external_sources_allowed_in_flight,
+                    false);
+    pnh.param<std::string>("clock_phase_source", clock_policy_.phase_source, "external");
+    pnh.param<std::string>("clock_phase", clock_phase_param_, "preflight");
+    double max_offset_ms = 2.0;
+    double max_uncertainty_ms = 2.0;
+    pnh.param<double>("max_clock_offset_ms", max_offset_ms, 2.0);
+    pnh.param<double>("preflight_max_offset_ms", max_offset_ms, max_offset_ms);
+    pnh.param<double>("preflight_max_uncertainty_ms", max_uncertainty_ms, 2.0);
+    clock_policy_.preflight_max_offset_ns =
+        static_cast<int64_t>(std::max(0.0, max_offset_ms) * 1000000.0);
+    clock_policy_.preflight_max_uncertainty_ns =
+        static_cast<uint64_t>(std::max(0.0, max_uncertainty_ms) * 1000000.0);
+
+    pnh.param<bool>("mock_clock_ok", mock_clock_ok_, true);
+    pnh.param<int>("mock_clock_quality", mock_clock_quality_, 0);
+    pnh.param<int>("mock_clock_offset_ns", mock_clock_offset_ns_, 0);
+    pnh.param<int>("mock_clock_uncertainty_ns", mock_clock_uncertainty_ns_, 0);
+    pnh.param<std::string>("mock_clock_source", mock_clock_source_, "mock_ground_station");
+    clock_phase_ = swarm_sync::ClockMonitor::phaseFromString(clock_phase_param_);
+  }
+
+  swarm_sync::ClockMonitorResult sampleClock() {
+    ros::NodeHandle pnh("~");
+    pnh.param<std::string>("clock_phase", clock_phase_param_, clock_phase_param_);
+    clock_phase_ = swarm_sync::ClockMonitor::phaseFromString(clock_phase_param_);
+    if (clock_policy_.provider == "mock") {
+      swarm_sync::ClockMonitorResult result;
+      result.phase = clock_phase_;
+      result.source_is_ground = true;
+      result.state.clock_ok = mock_clock_ok_;
+      result.state.offset_ns = mock_clock_offset_ns_;
+      result.state.uncertainty_ns = static_cast<uint64_t>(std::max(0, mock_clock_uncertainty_ns_));
+      result.state.quality = static_cast<swarm_sync::ClockQuality>(mock_clock_quality_);
+      result.state.source = mock_clock_source_;
+      result.start_allowed = result.state.clock_ok || !clock_policy_.require_clock_ok_to_start;
+      result.reason = result.state.clock_ok ? "mock clock synchronized to ground station"
+                                            : "mock clock is not synchronized";
+      return result;
+    }
+    return clock_monitor_.sample(clock_policy_, clock_phase_);
   }
 
   ros::NodeHandle nh_;
@@ -649,6 +715,9 @@ class SwarmRuntimeNode {
   swarm_sync::weaknet::ChannelProfile weaknet_profile_;
   swarm_sync::weaknet::BudgetReport weaknet_budget_;
   swarm_sync::weaknet::RecommendationEngine recommendation_engine_;
+  swarm_sync::ClockPolicy clock_policy_;
+  swarm_sync::ClockMonitor clock_monitor_;
+  swarm_sync::ClockMonitorResult last_clock_result_;
   std::map<std::string, swarm_sync::weaknet::LinkHealthWindow> link_windows_;
   std::map<std::string, swarm_sync::weaknet::WeaknetStateMachine> link_states_;
   swarm_sync::weaknet::LinkState weaknet_state_{swarm_sync::weaknet::LinkState::Good};
@@ -677,9 +746,16 @@ class SwarmRuntimeNode {
   std::string expected_sample_channel_ = "runtime_state";
   std::string weaknet_summary_ = "weaknet=unconfigured";
   std::string weaknet_reason_ = "healthy";
+  std::string clock_phase_param_ = "preflight";
+  std::string mock_clock_source_ = "mock_ground_station";
   int weaknet_payload_bytes_p95_ = 600;
+  int mock_clock_offset_ns_ = 0;
+  int mock_clock_uncertainty_ns_ = 0;
+  int mock_clock_quality_ = 0;
   bool auto_start_ = true;
   bool weaknet_enabled_ = true;
+  bool mock_clock_ok_ = true;
+  swarm_sync::ClockPhase clock_phase_{swarm_sync::ClockPhase::Preflight};
 };
 
 int main(int argc, char** argv) {

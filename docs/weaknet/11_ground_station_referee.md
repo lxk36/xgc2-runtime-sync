@@ -24,7 +24,7 @@ payload interpreter
 
 ```text
 ground_time_service
-  chrony/NTP server，系统级服务。
+  chrony/NTP server，系统级服务；飞行中作为局域网唯一时间源。
 
 ground_zenoh_router
   zenohd 或多 router profile。
@@ -50,6 +50,9 @@ ground_recorder
 6. 当前 state machine 状态是什么？为什么迁移？
 7. 中间件建议是什么？证据是什么？
 8. 错峰是否生效？发送分布是否仍然聚集？
+9. 每架无人机是否只选中了地面站时间源？
+10. offset/uncertainty 是否仍满足 2 ms gate？
+11. 当前 phase 是 preflight 还是 in_flight？
 ```
 
 ## 地面站输出
@@ -69,4 +72,7 @@ ground_recorder
 - 可导出 session report。
 - 可追溯任意状态迁移。
 - 可对比错峰前后 burst 指标。
+- 起飞前拒绝 clock source、offset、uncertainty 或 leap status 不合格的节点。
+- 飞行中不要求无人机重新校时，不执行 chronyc makestep，只记录 degraded/bad。
+- 同步动作使用未来 T_exec，而不是执行前临时 NTP resync。
 ```

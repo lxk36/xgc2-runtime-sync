@@ -51,6 +51,7 @@ include_directories(
 )
 
 add_library(swarm_sync_core
+  src/core/clock_monitor.cpp
   src/core/cycle_scheduler.cpp
   src/core/deadline_checker.cpp
   src/core/envelope_codec.cpp
@@ -166,4 +167,8 @@ if(CATKIN_ENABLE_TESTING)
   endif()
 
   add_rostest(test/runtime_node_smoke.test DEPENDENCIES swarm_runtime_node runtime_node_smoke_test)
+  add_test(NAME check_chrony_script_test
+           COMMAND bash
+                   ${CMAKE_CURRENT_SOURCE_DIR}/tests/check_chrony_script_test.sh
+                   ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_chrony.sh)
 endif()

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "swarm_sync_core/clock_monitor.hpp"
 #include "swarm_sync_core/cycle_scheduler.hpp"
 #include "swarm_sync_core/deadline_checker.hpp"
 #include "swarm_sync_core/envelope_codec.hpp"
@@ -98,6 +99,101 @@ TEST(SessionManagerTest, RejectsInvalidConfigAndBadClock) {
   bad_clock.quality = ClockQuality::BAD;
   EXPECT_FALSE(manager.arm(2000, bad_clock));
   EXPECT_EQ(SessionState::ERROR, manager.state());
+}
+
+TEST(ClockMonitorTest, ParsesChronyTrackingAndSelectedSource) {
+  const std::string tracking_text =
+      "Reference ID    : C0A80A0A (192.168.10.10)\n"
+      "System time     : 0.000500000 seconds fast of NTP time\n"
+      "Root delay      : 0.000400000 seconds\n"
+      "Root dispersion : 0.000300000 seconds\n"
+      "Leap status     : Normal\n";
+  const std::string sources_text =
+      "MS Name/IP address         Stratum Poll Reach LastRx Last sample\n"
+      "===============================================================================\n"
+      "^* 192.168.10.10                 1   6   377    12   +500us[ +500us] +/-  900us\n"
+      "^- pool.ntp.org                  2   6   377    11   -800us[ -800us] +/-   20ms\n";
+
+  const auto tracking = ClockMonitor::parseTracking(tracking_text);
+  const auto sources = ClockMonitor::parseSources(sources_text);
+
+  EXPECT_TRUE(tracking.ok);
+  EXPECT_EQ("C0A80A0A", tracking.reference_id);
+  EXPECT_EQ("192.168.10.10", tracking.reference_name);
+  EXPECT_DOUBLE_EQ(0.0005, tracking.system_time_s);
+  EXPECT_EQ("Normal", tracking.leap_status);
+  EXPECT_TRUE(sources.ok);
+  EXPECT_EQ("192.168.10.10", sources.selected_source);
+}
+
+TEST(ClockMonitorTest, AllowsStartWhenGroundSourceWithinTwoMilliseconds) {
+  ClockMonitorSnapshot snapshot;
+  snapshot.tracking = ClockMonitor::parseTracking(
+      "Reference ID    : C0A80A0A (192.168.10.10)\n"
+      "System time     : 0.001500000 seconds slow of NTP time\n"
+      "Root delay      : 0.000200000 seconds\n"
+      "Root dispersion : 0.000100000 seconds\n"
+      "Leap status     : Normal\n");
+  snapshot.sources = ClockMonitor::parseSources(
+      "^* 192.168.10.10 1 6 377 12 +1500us[+1500us] +/- 500us\n");
+  ClockPolicy policy;
+  policy.ground_time_source = "192.168.10.10";
+
+  const auto result = ClockMonitor::evaluateSnapshot(snapshot, policy, ClockPhase::Preflight);
+
+  EXPECT_TRUE(result.state.clock_ok);
+  EXPECT_TRUE(result.start_allowed);
+  EXPECT_EQ(ClockQuality::OK, result.state.quality);
+  EXPECT_EQ(-1500000, result.state.offset_ns);
+  EXPECT_LE(result.state.uncertainty_ns, 2000000u);
+}
+
+TEST(ClockMonitorTest, RejectsLargeOffsetWrongSourceAndLeapAnomaly) {
+  ClockPolicy policy;
+  policy.ground_time_source = "192.168.10.10";
+
+  ClockMonitorSnapshot large_offset;
+  large_offset.tracking = ClockMonitor::parseTracking(
+      "Reference ID    : C0A80A0A (192.168.10.10)\n"
+      "System time     : 0.004000000 seconds fast of NTP time\n"
+      "Root delay      : 0.000100000 seconds\n"
+      "Root dispersion : 0.000100000 seconds\n"
+      "Leap status     : Normal\n");
+  large_offset.sources = ClockMonitor::parseSources(
+      "^* 192.168.10.10 1 6 377 12 +4000us[+4000us] +/- 500us\n");
+  const auto large_offset_result =
+      ClockMonitor::evaluateSnapshot(large_offset, policy, ClockPhase::Preflight);
+  EXPECT_FALSE(large_offset_result.state.clock_ok);
+  EXPECT_FALSE(large_offset_result.start_allowed);
+  EXPECT_NE(std::string::npos, large_offset_result.reason.find("offset"));
+
+  ClockMonitorSnapshot wrong_source = large_offset;
+  wrong_source.tracking = ClockMonitor::parseTracking(
+      "Reference ID    : 8.8.8.8 (time.google.com)\n"
+      "System time     : 0.000100000 seconds fast of NTP time\n"
+      "Root delay      : 0.000100000 seconds\n"
+      "Root dispersion : 0.000100000 seconds\n"
+      "Leap status     : Normal\n");
+  wrong_source.sources = ClockMonitor::parseSources(
+      "^* time.google.com 1 6 377 12 +100us[+100us] +/- 500us\n");
+  const auto wrong_source_result =
+      ClockMonitor::evaluateSnapshot(wrong_source, policy, ClockPhase::Preflight);
+  EXPECT_FALSE(wrong_source_result.state.clock_ok);
+  EXPECT_NE(std::string::npos, wrong_source_result.reason.find("ground station"));
+
+  ClockMonitorSnapshot leap_bad = large_offset;
+  leap_bad.tracking = ClockMonitor::parseTracking(
+      "Reference ID    : C0A80A0A (192.168.10.10)\n"
+      "System time     : 0.000100000 seconds fast of NTP time\n"
+      "Root delay      : 0.000100000 seconds\n"
+      "Root dispersion : 0.000100000 seconds\n"
+      "Leap status     : Not synchronised\n");
+  leap_bad.sources = ClockMonitor::parseSources(
+      "^* 192.168.10.10 1 6 377 12 +100us[+100us] +/- 500us\n");
+  const auto leap_result =
+      ClockMonitor::evaluateSnapshot(leap_bad, policy, ClockPhase::Preflight);
+  EXPECT_FALSE(leap_result.state.clock_ok);
+  EXPECT_NE(std::string::npos, leap_result.reason.find("leap"));
 }
 
 TEST(CycleSchedulerTest, TickIsControlledAndDoesNotBackfillMissedCycles) {

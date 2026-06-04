@@ -87,6 +87,14 @@ ClockMonitor:
 
 - Read chrony, PTP, or mock clock status.
 - Expose clock offset, uncertainty, and quality.
+- Parse `chronyc tracking` and `chronyc sources -v` without mutating system
+  time.
+- Enforce the preflight gate before arming or starting a session.
+- In flight, keep publishing degraded/bad state but do not request or perform a
+  time step.
+- Use an externally supplied phase, `preflight` or `in_flight`, so flight-stack
+  armed-state integration can be added later without coupling this package to
+  MAVROS or PX4.
 
 HealthMonitor:
 
@@ -119,6 +127,9 @@ Expected services:
 - `/swarm_sync/start_session`
 - `/swarm_sync/stop_session`
 - `/swarm_sync/get_runtime_status`
+
+`GetRuntimeStatus` includes clock offset, uncertainty, quality, selected
+source, and phase so the ground station can make a hard preflight gate decision.
 
 The concrete node implementation and build wiring are intentionally left for
 the later integration step.
