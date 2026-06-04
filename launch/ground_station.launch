@@ -1,3 +1,4 @@
+<?xml version="1.0"?>
 <launch>
   <arg name="session_config" default="$(find periodic_sync)/config/session.yaml"/>
   <arg name="session_id" default="ground_session"/>
