@@ -25,7 +25,7 @@ on:
         description: Run source tests
         required: true
         type: boolean
-        default: true
+        default: false
 
 jobs:
   release-guard:
