@@ -1,36 +1,36 @@
 schema: xgc2.product.v1
 id: xgc2-runtime-sync
 name: XGC2 Runtime Sync
-version: 1.6.2-1
+version: 1.6.2-2
 kind: ros1-apt
-summary: Runtime synchronization coordinator, weak-network telemetry, and swarm sync core for XGC2 ROS1 multi-agent systems.
-
+summary: Runtime synchronization coordinator, weak-network telemetry, and swarm sync
+  core for XGC2 ROS1 multi-agent systems.
 ros:
   distro: noetic
   packages:
-    - periodic_sync
-
+  - periodic_sync
 apt:
   distribution: focal
   install:
-    - ros-noetic-xgc2-runtime-sync
+  - ros-noetic-xgc2-runtime-sync
   packages:
-    - ros-noetic-xgc2-runtime-sync
-
+  - ros-noetic-xgc2-runtime-sync
 usage:
-  install: |
-    sudo apt update
-    sudo apt install ros-noetic-xgc2-runtime-sync
-  smoke_test: |
-    rospack find periodic_sync
+  install: 'sudo apt update
 
+    sudo apt install ros-noetic-xgc2-runtime-sync
+
+    '
+  smoke_test: 'rospack find periodic_sync
+
+    '
 ownership:
   paths:
-    - /opt/ros/noetic/share/periodic_sync
-    - /opt/ros/noetic/include/periodic_sync
-    - /opt/ros/noetic/include/swarm_sync_core
-    - /opt/ros/noetic/include/swarm_sync_ros1
-    - /opt/ros/noetic/include/swarm_sync_core/weaknet
-    - /opt/ros/noetic/lib/libswarm_sync_ros1_adapter.so
-    - /opt/ros/noetic/lib/periodic_sync/sync_coordinator
-    - /opt/ros/noetic/lib/periodic_sync/swarm_runtime_node
+  - /opt/ros/noetic/share/periodic_sync
+  - /opt/ros/noetic/include/periodic_sync
+  - /opt/ros/noetic/include/swarm_sync_core
+  - /opt/ros/noetic/include/swarm_sync_ros1
+  - /opt/ros/noetic/include/swarm_sync_core/weaknet
+  - /opt/ros/noetic/lib/libswarm_sync_ros1_adapter.so
+  - /opt/ros/noetic/lib/periodic_sync/sync_coordinator
+  - /opt/ros/noetic/lib/periodic_sync/swarm_runtime_node
